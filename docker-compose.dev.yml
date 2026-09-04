@@ -17,6 +17,8 @@ services:
       PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${PORT:-18080}}"
       HASH_TARGET: "${HASH_TARGET:-file}"
       HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
+      ADMIN_PATH: "${ADMIN_PATH:-admin123456}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       PORT: "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]

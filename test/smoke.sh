@@ -10,6 +10,7 @@ set -uo pipefail
 PORT="${PORT:-18080}"
 BASE="${BASE:-http://localhost:${PORT}}"
 LINK_PREFIX="${LINK_PREFIX:-${BASE}}"
+ADMIN_PATH="${ADMIN_PATH:-admin123456}"
 
 fail() { echo "SMOKE FAIL: $1" >&2; exit 1; }
 
@@ -19,7 +20,11 @@ health=$(curl -sf "${BASE}/healthz") || fail "unreachable /healthz"
 [ "${health}" = '{"status":"ok"}' ] || fail "bad /healthz body: ${health}"
 echo "ok: /healthz"
 
-page=$(curl -sf "${BASE}/") || fail "unreachable /"
+root_body=$(curl -s "${BASE}/") || fail "unreachable /"
+[ -z "${root_body}" ] || fail "/ reveals content: ${root_body}"
+echo "ok: / returns empty body"
+
+page=$(curl -sf "${BASE}/${ADMIN_PATH}") || fail "unreachable /${ADMIN_PATH}"
 link=$(printf '%s' "${page}" | grep -o "${LINK_PREFIX//\//\/}/[0-9a-f]*/[0-9a-f]*" | head -1)
 [ -n "${link}" ] || fail "no share link with prefix ${LINK_PREFIX} in index"
 echo "ok: index link ${link}"
