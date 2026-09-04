@@ -1,0 +1,6 @@
+FROM golang:1.24
+WORKDIR /src
+COPY . .
+RUN gofmt -l . | tee /tmp/gofmt.out && test ! -s /tmp/gofmt.out
+RUN go vet ./...
+RUN go test -race -shuffle=on -count=1 ./...
