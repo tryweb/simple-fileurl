@@ -1,0 +1,9 @@
+FROM alpine:3.23
+RUN apk add --no-cache jq openssh-server openssh-keygen netcat-openbsd
+WORKDIR /src
+COPY Dockerfile.sftp /src/
+COPY sftp/ /src/sftp/
+COPY test/sftp-config.sh test/sftp-reconcile.sh /src/test/
+COPY cmd/sftp-admin/main.go /src/cmd/sftp-admin/main.go
+RUN chmod 0755 /src/sftp/*.sh /src/test/*.sh
+CMD ["/bin/sh"]
