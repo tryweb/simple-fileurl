@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.24-alpine AS builder
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sftp-admin ./cmd/sftp-admin
+
+FROM alpine:3.23
+RUN apk add --no-cache ca-certificates wget openssh-keygen \
+    && mkdir -p /var/lib/sftp-users \
+    && chmod 0700 /var/lib/sftp-users
+COPY --from=builder /out/sftp-admin /usr/local/bin/sftp-admin
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/sftp-admin"]
