@@ -1,0 +1,64 @@
+# Promote a published release to the stable channel.
+#
+# Publishing and recommending are deliberately separate steps: cutting vX.Y.Z
+# only pushes immutable version tags; this workflow moves the shared `latest`
+# tag to a version AFTER it has been validated (staging/dogfood soak).
+# Users tracking :latest therefore always receive a soaked release.
+#
+# Adapted from ai-engkit's promote.yml. This repo's CI creates no GitHub
+# Releases, so there are no release-marking steps here — promotion is purely
+# the image retag below.
+#
+name: Promote stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to promote to latest (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: promote-stable
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote to latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate version input
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must match v<major>.<minor>.<patch> (e.g. v0.1.0), got: ${{ inputs.version }}"
+            exit 1
+          fi
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Re-tag the EXISTING published image — same digest, never rebuilt.
+      - name: Promote image tag to latest
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker pull "${IMAGE}:${{ inputs.version }}"
+          docker tag "${IMAGE}:${{ inputs.version }}" "${IMAGE}:latest"
+          docker push "${IMAGE}:latest"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:latest" | cut -f2 -d'@')
+          echo "::notice::Promoted ${{ inputs.version }} to latest (digest sha256:${DIGEST})"
+
+      - name: Summary
+        run: |
+          echo "### Promoted \`${{ inputs.version }}\` to \`latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Digest moved as-is (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
