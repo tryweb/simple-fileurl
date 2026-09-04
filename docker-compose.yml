@@ -1,0 +1,24 @@
+services:
+  file-sharing:
+    build: .
+    image: simple-fileurl:latest
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # Host data directory containing the SHARE_PREFIX subtree, mounted
+      # read-only at the fixed container path.
+      - "${HOST_SHARE_PATH:?HOST_SHARE_PATH is required}:/opt/sharefiles:ro"
+    environment:
+      SHARE_ROOT: /opt/sharefiles
+      SHARE_PREFIX: "${SHARE_PREFIX:?SHARE_PREFIX is required}"
+      PUBLIC_URL: "${PUBLIC_URL:?PUBLIC_URL is required}"
+      HASH_TARGET: "${HASH_TARGET:-file}"
+      HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
+      PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

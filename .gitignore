@@ -1,0 +1,10 @@
+
+# AI-EngKit system directories
+.omo/
+.playwright-mcp/
+.codegraph/
+.sisyphus/
+.tmp/
+.env
+node_modules/
+backups/
