@@ -26,6 +26,15 @@ type Config struct {
 	HashAlgorithm string
 	// Port is the HTTP listen port.
 	Port string
+	// AdminPath, when set, is the secret single-segment path (e.g.
+	// "admin123456") where the file listing is served: only
+	// GET /<AdminPath> renders it. Empty disables the listing
+	// entirely and every index path returns 404.
+	AdminPath string
+	// AdminPassword, when set, additionally requires callers to submit
+	// this password on the admin path before the listing is shown.
+	// Empty means the secret path alone is sufficient.
+	AdminPassword string
 }
 
 // DefaultContainerRoot is the fixed container mount point.
@@ -55,6 +64,8 @@ func loadFromEnv(getenv func(string) string) (Config, error) {
 		HashTarget:    getenv("HASH_TARGET"),
 		HashAlgorithm: getenv("HASH_ALGORITHM"),
 		Port:          getenv("PORT"),
+		AdminPath:     getenv("ADMIN_PATH"),
+		AdminPassword: getenv("ADMIN_PASSWORD"),
 	}
 	if cfg.ContainerRoot == "" {
 		cfg.ContainerRoot = DefaultContainerRoot
@@ -96,6 +107,38 @@ func (c Config) Validate() error {
 	}
 	if _, err := strconv.Atoi(c.Port); err != nil {
 		return fmt.Errorf("invalid PORT %q: must be numeric", c.Port)
+	}
+	if err := ValidateAdminPath(c.AdminPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateAdminPath checks the secret listing path. Empty disables the
+// listing and is always valid. A non-empty value must be a single URL path
+// segment so it can never collide with /healthz or /{dirHash}/{fileHash}.
+func ValidateAdminPath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if len(p) < 8 {
+		return fmt.Errorf("invalid ADMIN_PATH %q: must be at least 8 characters", p)
+	}
+	if len(p) > 128 {
+		return fmt.Errorf("invalid ADMIN_PATH %q: must be at most 128 characters", p)
+	}
+	if strings.Contains(p, "/") || strings.Contains(p, "\\") {
+		return fmt.Errorf("invalid ADMIN_PATH %q: must be a single path segment without slashes", p)
+	}
+	if p == "." || p == ".." || p == "healthz" {
+		return fmt.Errorf("invalid ADMIN_PATH %q: reserved value", p)
+	}
+	for _, r := range p {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == '~' {
+			continue
+		}
+		return fmt.Errorf("invalid ADMIN_PATH %q: only letters, digits, and -_.~ are allowed", p)
 	}
 	return nil
 }

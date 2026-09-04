@@ -20,10 +20,15 @@ func TestLoadValid(t *testing.T) {
 		"HASH_TARGET":    "file",
 		"HASH_ALGORITHM": "md5",
 		"PORT":           "8080",
+		"ADMIN_PATH":     "admin123456",
+		"ADMIN_PASSWORD": "s3cret!",
 	}
 	cfg, err := loadFromEnv(func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AdminPath != "admin123456" || cfg.AdminPassword != "s3cret!" {
+		t.Fatalf("admin config not loaded: %+v", cfg)
 	}
 	if cfg.ShareURL("abc", "def") != "https://weurl.everplast.net/abc/def" {
 		t.Fatalf("ShareURL not normalized: %q", cfg.ShareURL("abc", "def"))
@@ -43,12 +48,17 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"PORT":           "8080",
 	}
 	cases := map[string]map[string]string{
-		"bad target":    {"HASH_TARGET": "random"},
-		"bad algorithm": {"HASH_ALGORITHM": "sha1"},
-		"bad prefix":    {"SHARE_PREFIX": "../etc"},
-		"abs prefix":    {"SHARE_PREFIX": "/files"},
-		"empty prefix":  {"SHARE_PREFIX": ""},
-		"bad port":      {"PORT": "http"},
+		"bad target":     {"HASH_TARGET": "random"},
+		"bad algorithm":  {"HASH_ALGORITHM": "sha1"},
+		"bad prefix":     {"SHARE_PREFIX": "../etc"},
+		"abs prefix":     {"SHARE_PREFIX": "/files"},
+		"empty prefix":   {"SHARE_PREFIX": ""},
+		"bad port":       {"PORT": "http"},
+		"short admin":    {"ADMIN_PATH": "short"},
+		"admin slash":    {"ADMIN_PATH": "a/b/cdefgh"},
+		"admin back":     {"ADMIN_PATH": `a\bcd1234`},
+		"admin reserved": {"ADMIN_PATH": "healthz"},
+		"admin space":    {"ADMIN_PATH": "has space1"},
 	}
 	for name, override := range cases {
 		env := map[string]string{}
@@ -78,5 +88,30 @@ func TestMissingRootReported(t *testing.T) {
 	}
 	if !strings.HasPrefix(cfg.NamespaceRoot(), "/opt/sharefiles/files") {
 		t.Fatalf("NamespaceRoot: %q", cfg.NamespaceRoot())
+	}
+}
+
+func TestValidateAdminPath(t *testing.T) {
+	valid := []string{"", "admin123456", "x9-_.~abc"}
+	for _, p := range valid {
+		if err := ValidateAdminPath(p); err != nil {
+			t.Fatalf("%q: unexpected error %v", p, err)
+		}
+	}
+	invalid := []string{
+		"short",
+		"a/b/cdefgh",
+		`a\bcd1234`,
+		"healthz",
+		".",
+		"..",
+		"has space1",
+		"trailing!",
+		strings.Repeat("a", 129),
+	}
+	for _, p := range invalid {
+		if err := ValidateAdminPath(p); err == nil {
+			t.Fatalf("%q: expected error", p)
+		}
 	}
 }

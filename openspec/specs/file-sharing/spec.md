@@ -60,12 +60,29 @@ The service SHALL expose downloads using the route `/<directory-hash>/<file-hash
 
 ### Requirement: Link generation interface
 
-The service SHALL provide a basic web interface that lists shareable regular files beneath the sharing root and displays a complete link using the configured public URL, directory hash, and file hash. The interface SHALL indicate the active hash target and algorithm.
+The service SHALL serve the file listing only at the configured secret path `GET /<ADMIN_PATH>` when `ADMIN_PATH` is set; an empty `ADMIN_PATH` disables the listing entirely. All other index paths (including `/`) SHALL return 200 with an empty body, revealing nothing about the service or the shared files. When `ADMIN_PASSWORD` is set, the admin path SHALL require the submitted password (via the password form) before showing the listing; the secret path alone is then insufficient. The listing SHALL enumerate shareable regular files beneath the sharing root and display a complete link using the configured public URL, directory hash, and file hash. The interface SHALL indicate the active hash target and algorithm.
 
 #### Scenario: User obtains a share link
 
 - **WHEN** a user opens the service's file listing and the sharing root contains a regular file
 - **THEN** the page shows the file and a copyable URL matching `PUBLIC_URL/<directory-hash>/<file-hash>`
+
+#### Scenario: Listing is hidden without the secret path
+
+- **WHEN** `ADMIN_PATH` is set and a user opens `/` or any path other than `/<ADMIN_PATH>`
+- **THEN** the service returns 200 with an empty body and no file information
+
+#### Scenario: Listing is disabled without configuration
+
+- **WHEN** `ADMIN_PATH` is empty and a user opens any index path
+- **THEN** the service returns 200 with an empty body and no file information
+
+#### Scenario: Password gate protects the listing
+
+- **WHEN** `ADMIN_PASSWORD` is set and a user opens `/<ADMIN_PATH>` without the password or with a wrong password
+- **THEN** the service returns 401 with a password form and no file information
+- **WHEN** the user submits the correct password
+- **THEN** the service shows the file listing
 
 #### Scenario: Unavailable file is omitted or marked unavailable
 

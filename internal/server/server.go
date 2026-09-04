@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"errors"
 	"html/template"
 	"net/http"
@@ -24,6 +25,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("GET /", s.handleIndex)
+	s.mux.HandleFunc("POST /", s.handleIndex)
 	s.mux.HandleFunc("GET /{dirHash}/{fileHash}", s.handleDownload)
 	return s
 }
@@ -124,9 +126,45 @@ type indexData struct {
 	Entries       []indexEntry
 }
 
+// passwordTemplate renders the password gate. It posts back to the admin
+// path so the password travels in the request body, not the URL.
+var passwordTemplate = template.Must(template.New("password").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Password required</title></head>
+<body>
+<h1>Password required</h1>
+<form method="post" action="">
+<input type="password" name="password" autocomplete="current-password">
+<button type="submit">Show files</button>
+</form>
+</body>
+</html>`))
+
+// checkAdminPassword compares the caller-supplied password with the
+// configured one in constant time.
+func checkAdminPassword(got, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.Error(w, "not found", http.StatusNotFound)
+	// The listing exists only at the configured secret path. Anything
+	// else — including "/" — returns 200 with no content, revealing
+	// nothing about the service or the shared files.
+	if s.cfg.AdminPath == "" || r.URL.Path != "/"+s.cfg.AdminPath {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// The password gate is active only when a password is configured.
+	// The form posts back to the same path so the secret stays out of
+	// the URL query string; a query value works too.
+	if s.cfg.AdminPassword != "" &&
+		!checkAdminPassword(r.FormValue("password"), s.cfg.AdminPassword) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = passwordTemplate.Execute(w, nil)
 		return
 	}
 	entries, err := s.store.List()

@@ -13,6 +13,15 @@ services:
       PUBLIC_URL: "${PUBLIC_URL:?PUBLIC_URL is required}"
       HASH_TARGET: "${HASH_TARGET:-file}"
       HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
+      # Secret single-segment path where the file listing is served
+      # (e.g. ADMIN_PATH=admin123456 exposes GET /admin123456).
+      # Empty disables the listing entirely; "/" always returns 200
+      # with an empty body.
+      ADMIN_PATH: "${ADMIN_PATH:-}"
+      # Optional extra gate: when set, the admin path requires this
+      # password (submitted via the password form) before showing files.
+      # Empty means the secret path alone is sufficient.
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       PORT: "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]

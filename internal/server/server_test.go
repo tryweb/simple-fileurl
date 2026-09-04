@@ -32,6 +32,7 @@ func testServer(t *testing.T, target, algo string) (*Server, config.Config) {
 		HashTarget:    target,
 		HashAlgorithm: algo,
 		Port:          "8080",
+		AdminPath:     "admin123456",
 	}
 	return New(cfg, store.New(cfg)), cfg
 }
@@ -68,7 +69,7 @@ func TestDownloadRoundTrip(t *testing.T) {
 			srv, cfg := testServer(t, target, algo)
 			// Get hashes from the listing page.
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456", nil))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("%s/%s index: %d", target, algo, rec.Code)
 			}
@@ -110,7 +111,8 @@ func TestDownloadOutcomes(t *testing.T) {
 		{"/" + strings.Repeat("a", 32) + "/" + strings.Repeat("b", 32), http.StatusNotFound},
 		{"/short/" + strings.Repeat("b", 32), http.StatusBadRequest},
 		{"/" + strings.Repeat("a", 64) + "/" + strings.Repeat("b", 64), http.StatusBadRequest},
-		{"/onlyone", http.StatusNotFound},
+		{"/onlyone", http.StatusOK},
+		{"/", http.StatusOK},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
@@ -139,10 +141,11 @@ func TestIndexEscapesAndEmpty(t *testing.T) {
 		HashTarget:    "filename",
 		HashAlgorithm: "md5",
 		Port:          "8080",
+		AdminPath:     "admin123456",
 	}
 	srv := New(cfg, store.New(cfg))
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("index: %d", rec.Code)
 	}
@@ -161,7 +164,7 @@ func TestIndexEscapesAndEmpty(t *testing.T) {
 	cfg.ContainerRoot = empty
 	srv = New(cfg, store.New(cfg))
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "No files available") {
 		t.Fatalf("empty index: %d %q", rec.Code, rec.Body.String())
 	}
@@ -212,5 +215,108 @@ func TestSafeFilename(t *testing.T) {
 	}
 	if got := safeFilename(""); got != `"download"` {
 		t.Fatalf("empty: %q", got)
+	}
+}
+
+func TestAdminPathGating(t *testing.T) {
+	srv, _ := testServer(t, "file", "md5")
+	for _, p := range []string{"/", "/wrongpath", "/admin123456/"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: got %d want 200", p, rec.Code)
+		}
+		if rec.Body.String() != "" {
+			t.Fatalf("%s: expected empty body, got %q", p, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Shared files") {
+		t.Fatalf("admin path: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListingDisabledWithoutAdminPath(t *testing.T) {
+	ns := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ns, "files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ns, "files", "a.txt"), []byte("a-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		ContainerRoot: ns,
+		SharePrefix:   "files",
+		PublicURL:     "https://example.test",
+		HashTarget:    "file",
+		HashAlgorithm: "md5",
+		Port:          "8080",
+	}
+	srv := New(cfg, store.New(cfg))
+	for _, p := range []string{"/", "/admin123456"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: got %d want 200", p, rec.Code)
+		}
+		if rec.Body.String() != "" {
+			t.Fatalf("%s: expected empty body, got %q", p, rec.Body.String())
+		}
+	}
+}
+
+func TestAdminPasswordGating(t *testing.T) {
+	ns := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ns, "files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ns, "files", "a.txt"), []byte("a-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		ContainerRoot: ns,
+		SharePrefix:   "files",
+		PublicURL:     "https://example.test",
+		HashTarget:    "file",
+		HashAlgorithm: "md5",
+		Port:          "8080",
+		AdminPath:     "admin123456",
+		AdminPassword: "s3cret!",
+	}
+	srv := New(cfg, store.New(cfg))
+
+	// No password: gate page, no listing content.
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456", nil))
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "Password required") {
+		t.Fatalf("missing password: %d %q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "a.txt") {
+		t.Fatalf("listing leaked without password: %q", rec.Body.String())
+	}
+
+	// Wrong password: still gated.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456?password=nope", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password: got %d want 401", rec.Code)
+	}
+
+	// Correct password via query: listing shown.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin123456?password=s3cret!", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "a.txt") {
+		t.Fatalf("correct query password: %d %q", rec.Code, rec.Body.String())
+	}
+
+	// Correct password via POST form: listing shown.
+	form := strings.NewReader("password=s3cret!")
+	req := httptest.NewRequest(http.MethodPost, "/admin123456", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "a.txt") {
+		t.Fatalf("correct form password: %d %q", rec.Code, rec.Body.String())
 	}
 }
