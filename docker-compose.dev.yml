@@ -1,4 +1,26 @@
 services:
+  share-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev-share
+    image: simple-fileurl-dev-share:dev
+    volumes:
+      - share-data:/share
+    environment:
+      SFTP_GID: "${SFTP_GID:-2000}"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -f /share/.fixture-initialized ]; then exit 0; fi
+        cp -a /seed/. /share/
+        chown root:root /share
+        chmod 0755 /share
+        chown root:$$SFTP_GID /share/files
+        chmod 2775 /share/files
+        touch /share/.fixture-initialized
+    restart: "no"
+
   file-sharing:
     build: .
     image: simple-fileurl:dev
@@ -6,8 +28,8 @@ services:
     ports:
       - "${PORT:-18080}:8080"
     volumes:
-      # Repo-local fixture tree so dev and CI work without an SFTP host.
-      - ./testdata:/opt/sharefiles:ro
+      # share-init copies the fixture into a root-owned volume for OpenSSH.
+      - share-data:/opt/sharefiles:ro
     env_file:
       - path: .env
         required: false
@@ -27,3 +49,55 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+  sftp:
+    build:
+      context: .
+      dockerfile: Dockerfile.sftp
+    image: simple-fileurl-sftp:dev
+    container_name: simple-fileurl-sftp-dev
+    depends_on:
+      share-init:
+        condition: service_completed_successfully
+    ports:
+      - "${SFTP_PORT:-12222}:22"
+    volumes:
+      - share-data:/share:rw
+      - sftp-users:/var/lib/sftp-users:ro
+    environment:
+      SHARE_PREFIX: "${SHARE_PREFIX:-files}"
+      SFTP_GID: "${SFTP_GID:-2000}"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  sftp-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.sftp-admin
+    image: simple-fileurl-sftp-admin:dev
+    container_name: simple-fileurl-sftp-admin-dev
+    ports:
+      - "127.0.0.1:${SFTP_ADMIN_PORT:-18081}:8080"
+    volumes:
+      - sftp-users:/var/lib/sftp-users:rw
+    environment:
+      PORT: "8080"
+      SFTP_ADMIN_PASSWORD: "${SFTP_ADMIN_PASSWORD:-dev-admin-password}"
+      SFTP_SEED_USER: "${SFTP_SEED_USER:-}"
+      SFTP_SEED_PUBKEY: "${SFTP_SEED_PUBKEY:-}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  share-data:
+  sftp-users:

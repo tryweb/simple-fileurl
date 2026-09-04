@@ -30,3 +30,45 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+  sftp:
+    image: ghcr.io/tryweb/simple-fileurl-sftp:${IMAGE_TAG:-latest}
+    ports:
+      - "${SFTP_PORT:-2222}:22"
+    volumes:
+      # OpenSSH requires the chroot root to be root-owned and non-writable.
+      # Prepare HOST_SHARE_PATH accordingly; only SHARE_PREFIX is writable.
+      - "${HOST_SHARE_PATH:?HOST_SHARE_PATH is required}:/share:rw"
+      - "sftp-users:/var/lib/sftp-users:ro"
+    environment:
+      SHARE_PREFIX: "${SHARE_PREFIX:?SHARE_PREFIX is required}"
+      SFTP_GID: "${SFTP_GID:-2000}"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  sftp-admin:
+    image: ghcr.io/tryweb/simple-fileurl-sftp-admin:${IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:${SFTP_ADMIN_PORT:-8081}:8080"
+    volumes:
+      - "sftp-users:/var/lib/sftp-users:rw"
+    environment:
+      PORT: "8080"
+      SFTP_ADMIN_PASSWORD: "${SFTP_ADMIN_PASSWORD:?SFTP_ADMIN_PASSWORD is required}"
+      SFTP_SEED_USER: "${SFTP_SEED_USER:-}"
+      SFTP_SEED_PUBKEY: "${SFTP_SEED_PUBKEY:-}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  sftp-users:
