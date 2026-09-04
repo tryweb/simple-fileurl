@@ -44,7 +44,7 @@ jobs:
       - name: Vet and test
         run: |
           go vet ./...
-          go test ./...
+          go test -race -shuffle=on -count=1 ./...
 
   smoke:
     name: Image Build and Smoke Test
@@ -67,9 +67,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build SFTP images
+        run: |
+          docker build -f Dockerfile.sftp -t simple-fileurl-sftp:ci .
+          docker build -f Dockerfile.sftp-admin -t simple-fileurl-sftp-admin:ci .
+          docker build -f Dockerfile.sftp-test -t simple-fileurl-sftp-test:ci .
+
+      - name: Run SFTP contract tests
+        run: |
+          bash test/sftp-config.sh
+          bash test/sftp-reconcile.sh
+          docker run --rm simple-fileurl-sftp-test:ci sh -c \
+            'cd /src && sh test/sftp-config.sh && sh test/sftp-reconcile.sh'
+
       - name: Validate compose files
         run: |
           HOST_SHARE_PATH=/tmp/ci-share SHARE_PREFIX=files PUBLIC_URL=https://example.test \
+            SFTP_ADMIN_PASSWORD=dummy \
             docker compose -f docker-compose.yml config > /dev/null
           docker compose -f docker-compose.dev.yml config > /dev/null
 
@@ -129,4 +143,24 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          cache-from: type=gha
+      - name: Build and push SFTP image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sftp
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-sftp:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}-sftp:sha-${{ github.sha }}
+          cache-from: type=gha
+      - name: Build and push SFTP Admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sftp-admin
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-sftp-admin:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}-sftp-admin:sha-${{ github.sha }}
           cache-from: type=gha
