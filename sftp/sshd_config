@@ -1,0 +1,39 @@
+# Minimal hardened OpenSSH config for the SFTP-only container.
+# Verified with: sshd -t -f /etc/ssh/sshd_config
+# Authenticated Match-block view:
+#   sshd -T -C user=<name>,addr=127.0.0.1,host=localhost
+#
+# Contract:
+# - Public-key auth only (no password, no keyboard-interactive).
+# - Every session is chrooted to /share (root-owned, outside writers).
+# - Only /share/${SHARE_PREFIX} is group-writable; sshd enforces nothing
+#   about the prefix itself, the entrypoint validates it at boot.
+# - No shell, no PTY, no agent/TCP/X11 forwarding, no tunnels.
+# - AuthorizedKeysFile lives outside the chroot (StrictModes stays on).
+
+Port 22
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitEmptyPasswords no
+AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
+AllowGroups sftpusers
+
+Subsystem sftp internal-sftp -u 0002
+
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitTunnel no
+PermitTTY no
+
+Match Group sftpusers
+	ChrootDirectory /share
+	ForceCommand internal-sftp -u 0002
+	X11Forwarding no
+	AllowTcpForwarding no
+	AllowAgentForwarding no
+	PermitTunnel no
+	PermitTTY no

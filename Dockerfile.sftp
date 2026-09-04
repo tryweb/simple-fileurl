@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+
+# Standalone SFTP container: Alpine + OpenSSH, public-key only, chrooted to
+# the shared bind mount at /share. User accounts and authorized keys are
+# reconciled at runtime from /var/lib/sftp-users/users.json (see sftp/).
+FROM alpine:3.23
+RUN apk add --no-cache openssh-server openssh-keygen jq netcat-openbsd \
+    && mkdir -p /share /var/lib/sftp-users /etc/ssh/authorized_keys.d \
+    && rm -f /etc/ssh/ssh_host_*_key* \
+    && chmod 0755 /share /var/lib/sftp-users /etc/ssh/authorized_keys.d
+COPY sftp/sshd_config /etc/ssh/sshd_config
+COPY sftp/reconcile.sh sftp/entrypoint.sh /usr/local/bin/
+RUN chmod 0644 /etc/ssh/sshd_config \
+    && chmod 0755 /usr/local/bin/reconcile.sh /usr/local/bin/entrypoint.sh
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
