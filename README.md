@@ -11,7 +11,8 @@ login, or upload endpoint.
 cp .env.example .env
 # Edit .env: set HOST_SHARE_PATH to the host directory that contains
 # the SHARE_PREFIX subtree (e.g. the SFTP data root).
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 curl http://localhost:8080/healthz
 ```
 

@@ -1,7 +1,6 @@
 services:
   file-sharing:
-    build: .
-    image: simple-fileurl:latest
+    image: ghcr.io/tryweb/simple-fileurl:${IMAGE_TAG:-latest}
     ports:
       - "${PORT:-8080}:8080"
     volumes:
