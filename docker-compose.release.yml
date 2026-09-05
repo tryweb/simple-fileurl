@@ -1,0 +1,45 @@
+# Release isolation override. Always use with an isolated project name, and
+# export RELEASE_RID with the same unique run id:
+#
+#   RID="release-<id>"; export RELEASE_RID="$RID"
+#   docker compose -p "$RID" -f docker-compose.dev.yml -f docker-compose.release.yml ...
+#
+# Guarantees, even with a polluted host environment:
+# - no hardcoded container_name (project-scoped names; never touches dev)
+# - no published host ports (the smoke gate uses the internal network only,
+#   so no host port can collide with running dev services)
+# - per-run image names (release builds never overwrite dev tags)
+# - pinned service env (ambient env cannot change admin/hash/fixture gates)
+# Never apply this file to the default (dev) project.
+services:
+  share-init:
+    image: "simple-fileurl-release-share:${RELEASE_RID:?RELEASE_RID is required}"
+    environment:
+      SFTP_GID: "2000"
+
+  file-sharing:
+    container_name: !reset null
+    image: "simple-fileurl-release:${RELEASE_RID:?RELEASE_RID is required}"
+    ports: !reset []
+    environment:
+      SHARE_PREFIX: files
+      PUBLIC_URL: http://file-sharing:8080
+      HASH_TARGET: file
+      HASH_ALGORITHM: md5
+      ADMIN_PATH: admin123456
+      ADMIN_PASSWORD: ""
+
+  sftp:
+    container_name: !reset null
+    image: "simple-fileurl-release-sftp:${RELEASE_RID:?RELEASE_RID is required}"
+    ports: !reset []
+    environment:
+      SHARE_PREFIX: files
+      SFTP_GID: "2000"
+
+  sftp-admin:
+    container_name: !reset null
+    image: "simple-fileurl-release-sftp-admin:${RELEASE_RID:?RELEASE_RID is required}"
+    ports: !reset []
+    environment:
+      SFTP_ADMIN_PASSWORD: dev-admin-password

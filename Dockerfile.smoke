@@ -1,0 +1,8 @@
+# syntax=docker/dockerfile:1
+# Minimal smoke-test runner (bash + curl only). Built per release run,
+# attached to the isolated release compose network, removed afterwards.
+# Keeps curl off the host requirement list: host needs only Git/Bash/Docker.
+FROM alpine:3.23
+RUN apk add --no-cache bash curl
+COPY test/smoke.sh /smoke.sh
+ENTRYPOINT ["/bin/bash", "/smoke.sh"]

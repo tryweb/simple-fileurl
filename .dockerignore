@@ -1,0 +1,19 @@
+# Release-safe build context: never ship secrets, history, or agent state
+# into images. Everything the Dockerfiles and release gates need
+# (go.mod, main.go, internal/, cmd/, sftp/, test/, testdata/,
+# install.sh, upgrade.sh, artifact-checksums.txt, Dockerfile*) stays included.
+.env
+.env.*
+!.env.example
+.git/
+backups/
+.omo/
+.codegraph/
+.sisyphus/
+.tmp/
+.playwright-mcp/
+node_modules/
+*.log
+docs/
+openspec/
+.github/
