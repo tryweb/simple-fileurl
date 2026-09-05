@@ -7,16 +7,28 @@ admin UI for managing SFTP users.
 
 ## Quick start
 
+For a new host, the installer creates `.env`, prepares the share permissions,
+pulls all three images, and starts Compose:
+
 ```bash
-cp .env.example .env
-# Edit .env: set HOST_SHARE_PATH to the host directory that contains
-# the SHARE_PREFIX subtree (e.g. the SFTP data root).
-docker compose pull
-docker compose up -d
-curl http://localhost:8080/healthz
+curl -fsSL https://raw.githubusercontent.com/tryweb/simple-fileurl/vX.Y.Z/install.sh | RELEASE_REF=vX.Y.Z bash
 ```
 
-Open `http://localhost:8080/` for the file listing with copyable links.
+The installer prompts for `HOST_SHARE_PATH`, `SHARE_PREFIX`, `PUBLIC_URL`,
+`ADMIN_PATH`, `IMAGE_TAG`, and `SFTP_ADMIN_PASSWORD`. For a local checkout,
+run `./install.sh` instead. After installation, open
+`http://localhost:8080/<ADMIN_PATH>/` for the file listing and
+`http://127.0.0.1:8081/` for the Admin UI.
+
+Existing installations can be upgraded with:
+
+```bash
+./upgrade.sh                 # keep the current IMAGE_TAG and release ref
+./upgrade.sh v0.2.0          # upgrade all three images to an immutable tag
+```
+
+See [docs/installation-upgrade.md](docs/installation-upgrade.md) for
+non-interactive setup, backups, rollback, and release-tag details.
 
 ## Configuration
 
@@ -27,7 +39,10 @@ Open `http://localhost:8080/` for the file listing with copyable links.
 | `PUBLIC_URL`     | Service | External base URL for rendered links (e.g. `https://weurl.everplast.net`). Required. Trailing slashes are trimmed. |
 | `HASH_TARGET`    | Service | `file` (hash contents, default) or `filename` (hash basename). |
 | `HASH_ALGORITHM` | Service | `md5` (default, 32 hex chars) or `sha256` (64 hex chars). |
+| `ADMIN_PATH`     | Service | Required per-host secret path for the file listing. |
+| `ADMIN_PASSWORD` | Service | Optional extra password for the file listing. |
 | `PORT`           | Compose | Host-side published port (default `8080`). The container always listens on `8080`. |
+| `IMAGE_TAG`      | Compose | Required immutable `vX.Y.Z` or `sha-<hex>` release tag. |
 | `SFTP_PORT`      | Compose | Host-side SFTP port (default `2222`; container listens on `22`). |
 | `SFTP_GID`       | SFTP | Numeric group ID for the writable `SHARE_PREFIX` subtree (default `2000`). |
 | `SFTP_ADMIN_PORT`| Compose | Host-side admin UI port on `127.0.0.1` (default `8081`). |
