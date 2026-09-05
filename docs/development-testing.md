@@ -58,6 +58,15 @@ PORT=18080 sh test/smoke.sh
 
 Run it after starting dev Compose. It checks the existing file-sharing HTTP behavior; live SFTP-to-web testing is described below.
 
+### Installer And Upgrade Script Checks
+
+```bash
+bash test/install-upgrade.sh
+```
+
+This validates shell syntax and the key install/upgrade safety steps without
+starting or modifying a deployment.
+
 ## Manual End-To-End Test
 
 1. Start dev Compose with `docker-compose.dev.yml`.
