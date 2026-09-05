@@ -1,6 +1,6 @@
 services:
   file-sharing:
-    image: ghcr.io/tryweb/simple-fileurl:${IMAGE_TAG:-latest}
+    image: ghcr.io/tryweb/simple-fileurl:${IMAGE_TAG:?IMAGE_TAG is required}
     ports:
       - "${PORT:-8080}:8080"
     volumes:
@@ -17,7 +17,7 @@ services:
       # (e.g. ADMIN_PATH=admin123456 exposes GET /admin123456).
       # Empty disables the listing entirely; "/" always returns 200
       # with an empty body.
-      ADMIN_PATH: "${ADMIN_PATH:-}"
+      ADMIN_PATH: "${ADMIN_PATH:?ADMIN_PATH is required}"
       # Optional extra gate: when set, the admin path requires this
       # password (submitted via the password form) before showing files.
       # Empty means the secret path alone is sufficient.
@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   sftp:
-    image: ghcr.io/tryweb/simple-fileurl-sftp:${IMAGE_TAG:-latest}
+    image: ghcr.io/tryweb/simple-fileurl-sftp:${IMAGE_TAG:?IMAGE_TAG is required}
     ports:
       - "${SFTP_PORT:-2222}:22"
     volumes:
@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   sftp-admin:
-    image: ghcr.io/tryweb/simple-fileurl-sftp-admin:${IMAGE_TAG:-latest}
+    image: ghcr.io/tryweb/simple-fileurl-sftp-admin:${IMAGE_TAG:?IMAGE_TAG is required}
     ports:
       - "127.0.0.1:${SFTP_ADMIN_PORT:-8081}:8080"
     volumes:
