@@ -41,6 +41,9 @@ jobs:
       - name: Format check
         run: test -z "$(gofmt -l .)"
 
+      - name: Installer checks
+        run: bash test/install-upgrade.sh
+
       - name: Vet and test
         run: |
           go vet ./...
