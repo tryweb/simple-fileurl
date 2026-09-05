@@ -8,6 +8,7 @@ services:
       - share-data:/share
     environment:
       SFTP_GID: "${SFTP_GID:-2000}"
+      WEB_GID: "${WEB_GID:-2001}"
     command:
       - /bin/sh
       - -ec
@@ -41,6 +42,7 @@ services:
       HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
       ADMIN_PATH: "${ADMIN_PATH:-admin123456}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      WEB_GID: "${WEB_GID:-2001}"
       PORT: "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
@@ -67,6 +69,7 @@ services:
     environment:
       SHARE_PREFIX: "${SHARE_PREFIX:-files}"
       SFTP_GID: "${SFTP_GID:-2000}"
+      WEB_GID: "${WEB_GID:-2001}"
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
       interval: 30s
