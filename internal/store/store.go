@@ -59,16 +59,10 @@ func (s *Store) NamespaceRoot() string {
 	return filepath.FromSlash(s.cfg.NamespaceRoot())
 }
 
-// Check verifies the namespace exists and is a usable directory.
+// Check verifies the container share root exists and holds the shared
+// prefix directory. Per-user directories are optional.
 func (s *Store) Check() error {
-	st, err := os.Stat(s.NamespaceRoot())
-	if err != nil {
-		return err
-	}
-	if !st.IsDir() {
-		return errors.New("namespace root is not a directory")
-	}
-	return nil
+	return s.cfg.CheckFilesystem()
 }
 
 // List scans the namespace and returns shareable entries sorted by logical path.
@@ -106,12 +100,36 @@ func (s *Store) Resolve(dirHash, fileHash string) (string, Entry, error) {
 
 func (s *Store) scan() ([]Entry, error) {
 	root := s.NamespaceRoot()
-	prefix, err := config.NormalizePrefix(s.cfg.SharePrefix)
+	top, err := os.ReadDir(root)
 	if err != nil {
+		// A missing or unreadable root serves nothing; Check reports the
+		// unhealthy state separately at startup and on /healthz.
+		if os.IsNotExist(err) || os.IsPermission(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var entries []Entry
-	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	for _, d := range top {
+		// Only eligible top-level directories form namespaces: the shared
+		// prefix and valid SFTP usernames. Anything else is ignored, and
+		// files directly under the root belong to no namespace.
+		if !d.IsDir() || !s.cfg.IsEligibleNamespace(d.Name()) {
+			continue
+		}
+		if err := s.scanNamespace(filepath.Join(root, d.Name()), d.Name(), &entries); err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].LogicalPath < entries[j].LogicalPath })
+	return entries, nil
+}
+
+// scanNamespace walks one eligible top-level directory, building logical
+// paths with the directory name as prefix (e.g. "files/mydir/cron.txt" or
+// "jonathan/docs/notes.pdf").
+func (s *Store) scanNamespace(nsRoot, namespace string, entries *[]Entry) error {
+	return filepath.WalkDir(nsRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsPermission(err) || os.IsNotExist(err) {
 				return nil
@@ -133,7 +151,7 @@ func (s *Store) scan() ([]Entry, error) {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		rel, err := filepath.Rel(root, p)
+		rel, err := filepath.Rel(nsRoot, p)
 		if err != nil {
 			return nil
 		}
@@ -141,9 +159,9 @@ func (s *Store) scan() ([]Entry, error) {
 		var logicalDir string
 		dir := path.Dir(relSlash)
 		if dir == "." {
-			logicalDir = prefix
+			logicalDir = namespace
 		} else {
-			logicalDir = prefix + "/" + dir
+			logicalDir = namespace + "/" + dir
 		}
 		logicalPath := logicalDir + "/" + d.Name()
 		dirHash, err := hash.Directory(logicalDir, s.cfg.HashAlgorithm)
@@ -167,7 +185,7 @@ func (s *Store) scan() ([]Entry, error) {
 				return err
 			}
 		}
-		entries = append(entries, Entry{
+		*entries = append(*entries, Entry{
 			LogicalPath: logicalPath,
 			LogicalDir:  logicalDir,
 			DirHash:     dirHash,
@@ -176,11 +194,6 @@ func (s *Store) scan() ([]Entry, error) {
 		})
 		return nil
 	})
-	if walkErr != nil {
-		return nil, walkErr
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].LogicalPath < entries[j].LogicalPath })
-	return entries, nil
 }
 
 func (s *Store) contentHash(abs string, info fs.FileInfo) (string, error) {
@@ -202,14 +215,25 @@ func (s *Store) contentHash(abs string, info fs.FileInfo) (string, error) {
 	return h, nil
 }
 
-// openPath re-validates the resolved file: regular, non-symlink, inside the
-// namespace. It returns the absolute path for streaming.
+// openPath re-validates the resolved file: regular, non-symlink, inside an
+// eligible namespace. It returns the absolute path for streaming.
 func (s *Store) openPath(e Entry) (string, error) {
 	root := s.NamespaceRoot()
-	// Rebuild the absolute path from the logical path components only.
-	cleanRel := path.Clean(strings.TrimPrefix(e.LogicalPath, mustPrefix(s.cfg.SharePrefix)))
-	cleanRel = strings.TrimPrefix(cleanRel, "/")
-	abs := filepath.Join(root, filepath.FromSlash(cleanRel))
+	// The logical path's first segment selects the namespace; only files
+	// in eligible namespaces (shared prefix or valid SFTP usernames)
+	// resolve.
+	clean := strings.TrimPrefix(path.Clean("/"+e.LogicalPath), "/")
+	if clean == "" || clean == "." || clean == ".." {
+		return "", ErrNotFound
+	}
+	top := clean
+	if i := strings.Index(clean, "/"); i >= 0 {
+		top = clean[:i]
+	}
+	if !s.cfg.IsEligibleNamespace(top) {
+		return "", ErrNotFound
+	}
+	abs := filepath.Join(root, filepath.FromSlash(clean))
 	if !withinRoot(root, abs) {
 		return "", ErrNotFound
 	}
@@ -223,6 +247,20 @@ func (s *Store) openPath(e Entry) (string, error) {
 	if !withinRoot(root, resolved) {
 		return "", ErrNotFound
 	}
+	// The resolved target must stay inside an eligible namespace, so a
+	// symlink cannot escape into an ineligible top-level directory.
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", ErrNotFound
+	}
+	relSlash := filepath.ToSlash(rel)
+	seg := relSlash
+	if i := strings.Index(relSlash, "/"); i >= 0 {
+		seg = relSlash[:i]
+	}
+	if !s.cfg.IsEligibleNamespace(seg) {
+		return "", ErrNotFound
+	}
 	st, err := os.Lstat(resolved)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -234,14 +272,6 @@ func (s *Store) openPath(e Entry) (string, error) {
 		return "", ErrNotFound
 	}
 	return resolved, nil
-}
-
-func mustPrefix(p string) string {
-	n, err := config.NormalizePrefix(p)
-	if err != nil {
-		return strings.Trim(p, "/")
-	}
-	return n
 }
 
 func withinRoot(root, abs string) bool {

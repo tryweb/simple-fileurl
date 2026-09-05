@@ -8,7 +8,8 @@
 #   /var/lib/sftp-users/       shared manifest volume (read-only mount here)
 #
 # Required env: SHARE_PREFIX (single path segment).
-# Optional env: SFTP_GID (default 2000), SFTP_POLL_INTERVAL (default 2).
+# Optional env: SFTP_GID (default 2000), WEB_GID (default 2001),
+# SFTP_POLL_INTERVAL (default 2).
 #
 # Test overrides: SFTP_SHARE_ROOT, SFTP_USERS_FILE, SFTP_AUTH_KEYS_DIR,
 # SFTP_SSHD_CONFIG, SFTP_SKIP_USERADD. `entrypoint.sh check` only validates.
@@ -18,6 +19,8 @@ SHARE_ROOT="${SFTP_SHARE_ROOT:-/share}"
 SHARE_PREFIX="${SHARE_PREFIX:?SHARE_PREFIX is required}"
 SFTP_GID="${SFTP_GID:-2000}"
 SFTP_GROUP="${SFTP_GROUP:-sftpusers}"
+WEB_GID="${WEB_GID:-2001}"
+WEB_GROUP="${WEB_GROUP:-webreaders}"
 USERS_FILE="${SFTP_USERS_FILE:-/var/lib/sftp-users/users.json}"
 AUTH_KEYS_DIR="${SFTP_AUTH_KEYS_DIR:-/etc/ssh/authorized_keys.d}"
 SSHD_CONFIG="${SFTP_SSHD_CONFIG:-/etc/ssh/sshd_config}"
@@ -46,6 +49,20 @@ ensure_group() {
   fi
 }
 
+ensure_web_group() {
+  # Creates the web readers group owning per-user directories, mirroring
+  # ensure_group for SFTP_GID. Runs before the reconcile loop so per-user
+  # directory creation in reconcile.sh can chown to WEB_GID.
+  if [ "$SKIP_USERADD" = "1" ]; then return 0; fi
+  if getent group "$WEB_GROUP" >/dev/null 2>&1; then
+    existing="$(getent group "$WEB_GROUP" | cut -d: -f3)"
+    [ "$existing" = "$WEB_GID" ] || fail "group $WEB_GROUP has GID $existing, want $WEB_GID"
+  else
+    addgroup -g "$WEB_GID" "$WEB_GROUP" >/dev/null 2>&1 \
+      || fail "cannot create group $WEB_GROUP with GID $WEB_GID"
+  fi
+}
+
 validate_share() {
   case "$SHARE_PREFIX" in
     ''|*/*|.|..) fail "SHARE_PREFIX must be a single path segment, got '$SHARE_PREFIX'" ;;
@@ -53,6 +70,8 @@ validate_share() {
   printf '%s' "$SHARE_PREFIX" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' 2>/dev/null \
     || fail "SHARE_PREFIX must match ^[A-Za-z0-9][A-Za-z0-9._-]*\$, got '$SHARE_PREFIX'"
   valid_gid "$SFTP_GID" || fail "SFTP_GID must be a numeric GID, got '$SFTP_GID'"
+  valid_gid "$WEB_GID" || fail "WEB_GID must be a numeric GID, got '$WEB_GID'"
+  [ "$WEB_GID" != "$SFTP_GID" ] || fail "WEB_GID ($WEB_GID) must differ from SFTP_GID ($SFTP_GID)"
 
   [ -d "$SHARE_ROOT" ] || fail "$SHARE_ROOT is missing or not a directory"
   owner="$(stat -c '%u %g %a' "$SHARE_ROOT")"
@@ -132,6 +151,7 @@ fi
 
 validate_share
 ensure_group
+ensure_web_group
 prepare_ssh
 "$RECONCILE_BIN" || log "initial reconcile failed; sshd still starts with previous state"
 

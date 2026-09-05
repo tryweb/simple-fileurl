@@ -22,7 +22,12 @@ services:
       # password (submitted via the password form) before showing files.
       # Empty means the secret path alone is sufficient.
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      WEB_GID: "${WEB_GID:-2001}"
       PORT: "8080"
+    # Supplementary group granting read access to per-user directories
+    # (mode 0750, group WEB_GID) on the read-only share mount.
+    group_add:
+      - "${WEB_GID:-2001}"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -43,6 +48,7 @@ services:
     environment:
       SHARE_PREFIX: "${SHARE_PREFIX:?SHARE_PREFIX is required}"
       SFTP_GID: "${SFTP_GID:-2000}"
+      WEB_GID: "${WEB_GID:-2001}"
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
       interval: 30s

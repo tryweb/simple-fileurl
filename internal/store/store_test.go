@@ -18,6 +18,7 @@ func testConfig(root, target, algo string) config.Config {
 		HashTarget:    target,
 		HashAlgorithm: algo,
 		Port:          "8080",
+		WebGID:        "2001",
 	}
 }
 
@@ -158,6 +159,19 @@ func TestOutsideNamespaceNotServed(t *testing.T) {
 	if err := st.Check(); err != nil {
 		t.Fatalf("check: %v", err)
 	}
+	// Files directly under the container root belong to no namespace.
+	if err := os.WriteFile(filepath.Join(ns, "stray.txt"), []byte("stray"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.LogicalPath, "stray") {
+			t.Fatalf("root-level file listed: %+v", e)
+		}
+	}
 	bad := New(config.Config{
 		ContainerRoot: ns,
 		SharePrefix:   "missing",
@@ -165,8 +179,92 @@ func TestOutsideNamespaceNotServed(t *testing.T) {
 		HashTarget:    "file",
 		HashAlgorithm: "md5",
 		Port:          "8080",
+		WebGID:        "2001",
 	})
 	if err := bad.Check(); err == nil {
 		t.Fatal("expected error for missing namespace")
+	}
+}
+
+// multiFixture builds <tmp>/ with a shared prefix (files/), two per-user
+// directories (alice/, jonathan/), and an ineligible directory (TempData/
+// is uppercase, so it matches neither the prefix nor the username pattern).
+func multiFixture(t *testing.T) string {
+	t.Helper()
+	ns := t.TempDir()
+	write := func(dir, name, body string) {
+		if err := os.MkdirAll(filepath.Join(ns, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ns, dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("files", "shared.txt", "shared-body")
+	write(filepath.Join("alice", "docs"), "notes.txt", "alice-body")
+	write("jonathan", "todo.txt", "jonathan-body")
+	write("TempData", "leak.txt", "leak-body")
+	return ns
+}
+
+func TestPerUserDirectoryListed(t *testing.T) {
+	ns := multiFixture(t)
+	st := New(testConfig(ns, "filename", "md5"))
+	entries, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries: %+v", entries)
+	}
+	want := []string{"alice/docs/notes.txt", "files/shared.txt", "jonathan/todo.txt"}
+	for i, w := range want {
+		if entries[i].LogicalPath != w {
+			t.Fatalf("logical paths: %+v", entries)
+		}
+	}
+}
+
+func TestIneligibleDirectoryExcluded(t *testing.T) {
+	ns := multiFixture(t)
+	st := New(testConfig(ns, "filename", "md5"))
+	entries, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.LogicalPath, "TempData") || strings.Contains(e.LogicalPath, "leak") {
+			t.Fatalf("ineligible directory listed: %+v", e)
+		}
+	}
+}
+
+func TestMultiUserResolveRoundTrip(t *testing.T) {
+	ns := multiFixture(t)
+	st := New(testConfig(ns, "file", "md5"))
+	entries, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies := map[string]string{
+		"files/shared.txt":     "shared-body",
+		"alice/docs/notes.txt": "alice-body",
+		"jonathan/todo.txt":    "jonathan-body",
+	}
+	if len(entries) != len(bodies) {
+		t.Fatalf("entries: %+v", entries)
+	}
+	for _, e := range entries {
+		abs, got, err := st.Resolve(e.DirHash, e.FileHash)
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", e.LogicalPath, err)
+		}
+		body, err := os.ReadFile(abs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != bodies[e.LogicalPath] || got.LogicalPath != e.LogicalPath {
+			t.Fatalf("resolved %+v body %q", got, body)
+		}
 	}
 }

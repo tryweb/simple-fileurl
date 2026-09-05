@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -35,15 +37,72 @@ type Config struct {
 	// this password on the admin path before the listing is shown.
 	// Empty means the secret path alone is sufficient.
 	AdminPassword string
+	// WebGID is the group ID for the web readers group. Per-user
+	// directories are created with this group so the web service can
+	// read files while SFTP users cannot access other users' directories.
+	WebGID string
 }
 
 // DefaultContainerRoot is the fixed container mount point.
 const DefaultContainerRoot = "/opt/sharefiles"
 
-// NamespaceRoot returns the absolute directory the service scans and serves:
-// <ContainerRoot>/<SharePrefix>.
+// DefaultWebGID is the default group ID for the web readers group.
+const DefaultWebGID = "2001"
+
+// usernamePattern is the deployment contract for SFTP login names, shared
+// with the SFTP reconciler and admin validation: lowercase start, max 32
+// chars. Only top-level directories matching it (or the shared prefix)
+// form servable namespaces.
+var usernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// NamespaceRoot returns the container share root (e.g. /opt/sharefiles).
+// Every eligible top-level directory beneath it — the shared prefix and
+// each per-user directory — forms an independent logical namespace.
 func (c Config) NamespaceRoot() string {
-	return path.Join(c.ContainerRoot, path.Clean("/"+c.SharePrefix))
+	return path.Clean(c.ContainerRoot)
+}
+
+// IsEligibleNamespace reports whether a top-level directory name under the
+// container share root is servable: the shared prefix or a valid SFTP
+// username. Anything else is ignored by the scan and never served.
+func (c Config) IsEligibleNamespace(name string) bool {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	if prefix, err := NormalizePrefix(c.SharePrefix); err == nil {
+		if name == strings.Split(prefix, "/")[0] {
+			return true
+		}
+	}
+	return usernamePattern.MatchString(name)
+}
+
+// CheckFilesystem verifies the container share root exists and contains the
+// shared prefix directory. Per-user directories are optional: startup
+// succeeds with only the shared prefix present, and fails when the prefix
+// directory itself is missing.
+func (c Config) CheckFilesystem() error {
+	root := filepath.FromSlash(path.Clean(c.ContainerRoot))
+	st, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("share root %q: %w", root, err)
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("share root %q is not a directory", root)
+	}
+	prefix, err := NormalizePrefix(c.SharePrefix)
+	if err != nil {
+		return err
+	}
+	top := strings.Split(prefix, "/")[0]
+	pst, err := os.Stat(filepath.Join(root, top))
+	if err != nil {
+		return fmt.Errorf("share prefix dir %q: %w", top, err)
+	}
+	if !pst.IsDir() {
+		return fmt.Errorf("share prefix dir %q is not a directory", top)
+	}
+	return nil
 }
 
 // ShareURL joins the public URL with path segments without duplicate slashes.
@@ -66,9 +125,13 @@ func loadFromEnv(getenv func(string) string) (Config, error) {
 		Port:          getenv("PORT"),
 		AdminPath:     getenv("ADMIN_PATH"),
 		AdminPassword: getenv("ADMIN_PASSWORD"),
+		WebGID:        getenv("WEB_GID"),
 	}
 	if cfg.ContainerRoot == "" {
 		cfg.ContainerRoot = DefaultContainerRoot
+	}
+	if cfg.WebGID == "" {
+		cfg.WebGID = DefaultWebGID
 	}
 	if cfg.HashTarget == "" {
 		cfg.HashTarget = "file"
@@ -110,6 +173,9 @@ func (c Config) Validate() error {
 	}
 	if err := ValidateAdminPath(c.AdminPath); err != nil {
 		return err
+	}
+	if _, err := strconv.Atoi(c.WebGID); err != nil {
+		return fmt.Errorf("invalid WEB_GID %q: must be a numeric GID", c.WebGID)
 	}
 	return nil
 }

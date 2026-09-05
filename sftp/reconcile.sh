@@ -21,6 +21,9 @@
 #   SFTP_USERS_FILE     default /var/lib/sftp-users/users.json
 #   SFTP_AUTH_KEYS_DIR  default /etc/ssh/authorized_keys.d
 #   SFTP_GROUP          default sftpusers
+#   SFTP_SHARE_ROOT     default /share (chroot root holding per-user dirs)
+#   WEB_GID             default 2001 (group owning per-user directories)
+#   WEB_GROUP           default webreaders (name for WEB_GID)
 #   SFTP_SKIP_USERADD   default 0; when 1, only key files are managed
 #                       (lets non-root CI exercise reconciliation).
 set -eu
@@ -28,6 +31,9 @@ set -eu
 USERS_FILE="${SFTP_USERS_FILE:-/var/lib/sftp-users/users.json}"
 AUTH_KEYS_DIR="${SFTP_AUTH_KEYS_DIR:-/etc/ssh/authorized_keys.d}"
 SFTP_GROUP="${SFTP_GROUP:-sftpusers}"
+SHARE_ROOT="${SFTP_SHARE_ROOT:-/share}"
+WEB_GID="${WEB_GID:-2001}"
+WEB_GROUP="${WEB_GROUP:-webreaders}"
 SKIP_USERADD="${SFTP_SKIP_USERADD:-0}"
 
 log() { printf 'reconcile: %s\n' "$*"; }
@@ -74,6 +80,41 @@ ensure_account() {
   esac
 }
 
+ensure_web_group() {
+  # Creates the web readers group (WEB_GROUP with GID WEB_GID) when missing,
+  # mirroring the entrypoint's ensure_group for SFTP_GID. Best-effort: the
+  # per-user directory chown uses the numeric WEB_GID, so a missing group
+  # entry never blocks reconciliation. Always succeeds.
+  if [ "$SKIP_USERADD" = "1" ]; then return 0; fi
+  if [ "$(id -u)" != "0" ]; then return 0; fi
+  if getent group "$WEB_GROUP" >/dev/null 2>&1; then return 0; fi
+  if getent group "$WEB_GID" >/dev/null 2>&1; then return 0; fi
+  addgroup -g "$WEB_GID" "$WEB_GROUP" >/dev/null 2>&1 || true
+  return 0
+}
+
+ensure_user_dir() {
+  # $1 = username. Creates /share/<username>/ owned by the user with group
+  # WEB_GID and mode 0750: only the owner can write, the web service reads
+  # via WEB_GID, and other SFTP users (members of SFTP_GROUP only) get
+  # permission denied. Idempotent: an existing directory is left untouched
+  # so re-runs never alter ownership or permissions.
+  dir="$SHARE_ROOT/$1"
+  if [ -d "$dir" ]; then return 0; fi
+  if [ -e "$dir" ]; then return 1; fi
+  if [ "$SKIP_USERADD" = "1" ]; then
+    # Hermetic tests point SFTP_SHARE_ROOT at a tmpdir; ignore failures
+    # when the real chroot is not writable.
+    mkdir -p "$dir" 2>/dev/null || return 0
+    chmod 0750 "$dir" 2>/dev/null || true
+    return 0
+  fi
+  mkdir -p "$dir" 2>/dev/null || return 1
+  chown "$1:$WEB_GID" "$dir" 2>/dev/null \
+    || chown "$1" "$dir" 2>/dev/null || return 1
+  chmod 0750 "$dir" || return 1
+}
+
 write_keys() {
   # $1 = username, $2 = newline-joined keys. Atomic root-owned 0640 write.
   dir="$AUTH_KEYS_DIR"
@@ -111,6 +152,10 @@ fi
 
 failures=0
 keep_list=""
+
+# The web readers group must exist before per-user directories are created
+# with it (best-effort; numeric-GID chown works without the entry).
+ensure_web_group
 
 count="$(jq -r '.users | length' "$USERS_FILE" 2>/dev/null)" || {
   log "cannot read users array; keeping previous state"
@@ -167,6 +212,18 @@ EOF
     failures=$((failures + 1))
     i=$((i + 1))
     continue
+  fi
+  # Per-user directory: the owner's private namespace. A failure here keeps
+  # the previous key state (but never deletes an existing directory).
+  if ! ensure_user_dir "$user"; then
+    if [ "$SKIP_USERADD" = "1" ]; then
+      log "skipping per-user directory for user=$user (user management skipped)"
+    else
+      log "cannot provision per-user directory for user=$user; keeping previous state for user"
+      failures=$((failures + 1))
+      i=$((i + 1))
+      continue
+    fi
   fi
   nkeys="$(printf '%s\n' "$keys" | wc -l)"
   write_keys "$user" "$keys"

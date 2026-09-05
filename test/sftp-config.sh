@@ -91,5 +91,12 @@ fi
 if grep -Eq 'users\.json|USERS_FILE' "$RECONCILE"; then ok "reconciler reads users manifest"; else bad "reconciler must read users manifest"; fi
 if grep -Eq '0640' "$RECONCILE"; then ok "reconciler writes 0640 key files"; else bad "reconciler must write 0640 key files"; fi
 
+# --- per-user directory contract (add-per-user-directories) ---
+if grep -Eq 'WEB_GID' "$ENTRYPOINT"; then ok "entrypoint references WEB_GID"; else bad "entrypoint must reference WEB_GID"; fi
+if grep -Eq 'ensure_web_group' "$ENTRYPOINT"; then ok "entrypoint ensures web readers group"; else bad "entrypoint must ensure web readers group"; fi
+if grep -Eq 'WEB_GID' "$RECONCILE"; then ok "reconciler uses WEB_GID"; else bad "reconciler must reference WEB_GID"; fi
+if grep -Eq '0750' "$RECONCILE"; then ok "reconciler creates 0750 per-user dirs"; else bad "reconciler must create 0750 per-user dirs"; fi
+if grep -Eq 'ensure_user_dir|per-user' "$RECONCILE"; then ok "reconciler manages per-user dirs"; else bad "reconciler must manage per-user dirs"; fi
+
 if [ "$fail" -gt 0 ]; then echo "CONFIG FAIL: $fail failures" >&2; exit 1; fi
 echo "CONFIG OK ($pass checks)"

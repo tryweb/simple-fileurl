@@ -111,5 +111,63 @@ write_manifest '{"version":1,"users":[{"username":"dave","enabled":true,"authori
 [ ! -e "$SFTP_AUTH_KEYS_DIR/dave" ] || bad "private key material writes no file"
 if grep -q "BEGIN.*PRIVATE" "$T/out.log"; then bad "private material leaked to logs"; else ok "private material rejected silently"; fi
 
+# --- 12. enabled user gets per-user directory with mode 0750 ---
+export SFTP_SHARE_ROOT="$T/share"
+mkdir -p "$SFTP_SHARE_ROOT"
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"alice\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\"]}]}"
+[ "$(run_reconcile)" = "0" ] || bad "per-user dir manifest exits 0"
+[ -d "$SFTP_SHARE_ROOT/alice" ] || bad "alice per-user directory created"
+[ "$(stat -c %a "$SFTP_SHARE_ROOT/alice")" = "750" ] || bad "alice per-user directory mode 0750"
+ok "per-user directory created with mode 0750"
+
+# --- 13. per-user directory creation is idempotent ---
+chmod 755 "$SFTP_SHARE_ROOT/alice"
+before="$(stat -c '%a %u %g' "$SFTP_SHARE_ROOT/alice")"
+[ "$(run_reconcile)" = "0" ] || bad "second reconcile exits 0"
+after="$(stat -c '%a %u %g' "$SFTP_SHARE_ROOT/alice")"
+[ "$before" = "$after" ] || bad "second run altered per-user directory ($before -> $after)"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/alice")" = "$ED25519_A" ] || bad "alice key intact after second run"
+ok "per-user directory untouched by second reconcile"
+
+# --- 14. disabled user keeps directory on disk but loses key ---
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"alice\",\"enabled\":false,\"authorized_keys\":[\"$ED25519_A\"]}]}"
+[ "$(run_reconcile)" = "0" ] || bad "disable manifest exits 0"
+[ ! -e "$SFTP_AUTH_KEYS_DIR/alice" ] || bad "disabled alice key removed"
+[ -d "$SFTP_SHARE_ROOT/alice" ] || bad "disabled alice directory persists"
+ok "disabled user keeps directory, loses key"
+unset SFTP_SHARE_ROOT
+
+# --- 15. SFTP users cannot access other users' per-user directories ---
+# Needs root (account provisioning + su); skipped otherwise.
+if [ "$(id -u)" = "0" ] && command -v su >/dev/null 2>&1 && command -v adduser >/dev/null 2>&1; then
+  iso_share="$T/iso-share"
+  mkdir -p "$iso_share" && chmod 0755 "$iso_share" && chmod 0755 "$T"
+  export SFTP_SHARE_ROOT="$iso_share"
+  export SFTP_SKIP_USERADD=0
+  write_manifest "{\"version\":1,\"users\":[{\"username\":\"isoalice\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\"]},{\"username\":\"isobob\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_B\"]}]}"
+  if [ "$(run_reconcile)" = "0" ] && [ -d "$iso_share/isoalice" ]; then
+    [ "$(stat -c %a "$iso_share/isoalice")" = "750" ] || bad "isoalice dir mode 0750"
+    [ "$(stat -c %U "$iso_share/isoalice")" = "isoalice" ] || bad "isoalice dir owned by isoalice"
+    if su isobob -s /bin/sh -c "ls \"$iso_share/isoalice\"" >/dev/null 2>&1; then
+      bad "isobob must not list isoalice directory"
+    else
+      ok "cross-user per-user directory access denied"
+    fi
+    if su isoalice -s /bin/sh -c "ls \"$iso_share/isoalice\"" >/dev/null 2>&1; then
+      ok "owner can list own per-user directory"
+    else
+      bad "owner must list own per-user directory"
+    fi
+  else
+    ok "skip isolation checks (user provisioning unavailable)"
+  fi
+  export SFTP_SKIP_USERADD=1
+  unset SFTP_SHARE_ROOT
+  deluser isoalice >/dev/null 2>&1 || true
+  deluser isobob >/dev/null 2>&1 || true
+else
+  ok "skip cross-user isolation test (needs root)"
+fi
+
 if [ "$fail" -gt 0 ]; then echo "RECONCILE FAIL: $fail failures" >&2; exit 1; fi
 echo "RECONCILE OK ($pass checks)"
