@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"simple-fileurl/internal/config"
+	"simple-fileurl/internal/links"
 	"simple-fileurl/internal/server"
 	"simple-fileurl/internal/store"
 )
@@ -28,7 +29,11 @@ func run() error {
 	if err := st.Check(); err != nil {
 		return err
 	}
-	srv := server.New(cfg, st)
+	ls := links.NewStore(cfg.LinksDir)
+	if err := ls.Load(); err != nil {
+		return err
+	}
+	srv := server.New(cfg, st, ls)
 	log.Printf("listening on :%s prefix=%s target=%s algo=%s", cfg.Port, cfg.SharePrefix, cfg.HashTarget, cfg.HashAlgorithm)
 	return http.ListenAndServe(":"+cfg.Port, srv)
 }

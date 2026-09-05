@@ -26,8 +26,8 @@ services:
       PUBLIC_URL: http://file-sharing:8080
       HASH_TARGET: file
       HASH_ALGORITHM: md5
-      ADMIN_PATH: admin123456
-      ADMIN_PASSWORD: ""
+      ADMIN_TOKEN: [REDACTED:API key param]
+      LINKS_DIR: /var/lib/file-links
 
   sftp:
     container_name: !reset null

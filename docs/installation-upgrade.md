@@ -28,7 +28,7 @@ The installer prompts for:
 - `HOST_SHARE_PATH`
 - `SHARE_PREFIX` (default `files`)
 - `PUBLIC_URL`
-- `ADMIN_PATH` (a unique 8-128 character URL-safe path)
+- `ADMIN_TOKEN` (secret Bearer token for the share-link management API)
 - `IMAGE_TAG` (an immutable `vX.Y.Z` or `sha-<hex>` release tag)
 - `SFTP_ADMIN_PASSWORD`
 
@@ -67,8 +67,7 @@ The installer creates `.env` from `.env.example`. Set or review:
 HOST_SHARE_PATH=/srv/simple-fileurl
 SHARE_PREFIX=files
 PUBLIC_URL=https://files.example.com
-ADMIN_PATH=replace-with-a-unique-path
-ADMIN_PASSWORD=
+ADMIN_TOKEN=<strong-secret>
 SFTP_ADMIN_PASSWORD=<strong-secret>
 SFTP_GID=2000
 IMAGE_TAG=v0.2.0
@@ -80,7 +79,7 @@ The production Compose file pulls three images for the same immutable release:
 - `ghcr.io/tryweb/simple-fileurl-sftp:${IMAGE_TAG}`
 - `ghcr.io/tryweb/simple-fileurl-sftp-admin:${IMAGE_TAG}`
 
-Missing `HOST_SHARE_PATH`, `SHARE_PREFIX`, `PUBLIC_URL`, `ADMIN_PATH`,
+Missing `HOST_SHARE_PATH`, `SHARE_PREFIX`, `PUBLIC_URL`, `ADMIN_TOKEN`,
 `IMAGE_TAG`, or `SFTP_ADMIN_PASSWORD` causes Compose interpolation to fail
 instead of starting an incomplete deployment.
 
@@ -93,7 +92,7 @@ release mirror; keep the checksum manifest alongside those artifacts.
 
 ```bash
 cp .env.example .env
-# Edit .env, especially HOST_SHARE_PATH, PUBLIC_URL, ADMIN_PATH, IMAGE_TAG,
+# Edit .env, especially HOST_SHARE_PATH, PUBLIC_URL, ADMIN_TOKEN, IMAGE_TAG,
 # and SFTP_ADMIN_PASSWORD.
 docker compose config
 docker compose pull
@@ -142,14 +141,29 @@ curl -f "$(grep '^PUBLIC_URL=' .env | cut -d= -f2-)/healthz"
 
 Then test Admin login, an existing SFTP key, and a hash download.
 
+### Migrating From The Secret-Path Listing
+
+Releases with share links remove `ADMIN_PATH` / `ADMIN_PASSWORD`: old
+`/<ADMIN_PATH>` URLs stop working on deploy. Before upgrading:
+
+1. Create replacement scoped links via `POST /api/links` (see docs/usage.md)
+   for every audience that used the old listing URL.
+2. Add the new required `ADMIN_TOKEN` variable to `.env` (the upgrader appends
+   missing keys; set a strong secret before starting the services).
+3. After upgrading, open each replacement `/l/:linkId` URL to confirm the
+   expected files are visible, then retire the old listing URL.
+
+There is no automated migration: links are recreated through the new API.
+
 The `promote.yml` workflow currently promotes the main web image to `latest`.
 For a coordinated SFTP release, use matching explicit `IMAGE_TAG` values for
 all three images rather than assuming `latest` was promoted for every image.
 
 ## Backup And Restore
 
-Back up both the host share and the `sftp-users` volume. The volume contains
-the manifest and public keys, but never generated private keys.
+Back up the host share, the `sftp-users` volume, and the `file-links` volume
+(share links). The `sftp-users` volume contains the manifest and public keys,
+but never generated private keys.
 
 ```bash
 mkdir -p backups
@@ -157,16 +171,24 @@ docker run --rm \
   -v simple-fileurl_sftp-users:/data:ro \
   -v "$PWD/backups:/backup" \
   alpine:3.23 tar czf /backup/sftp-users.tar.gz -C /data .
+docker run --rm \
+  -v simple-fileurl_file-links:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine:3.23 tar czf /backup/file-links.tar.gz -C /data .
 ```
 
-Restore only while Admin and SFTP are stopped:
+Restore only while Admin, SFTP, and file-sharing are stopped:
 
 ```bash
-docker compose stop sftp sftp-admin
+docker compose stop sftp sftp-admin file-sharing
 docker run --rm \
   -v simple-fileurl_sftp-users:/data \
   -v "$PWD/backups:/backup" \
   alpine:3.23 sh -c 'rm -rf /data/* /data/.[!.]* && tar xzf /backup/sftp-users.tar.gz -C /data'
+docker run --rm \
+  -v simple-fileurl_file-links:/data \
+  -v "$PWD/backups:/backup" \
+  alpine:3.23 sh -c 'rm -rf /data/* /data/.[!.]* && tar xzf /backup/file-links.tar.gz -C /data'
 ```
 
 ## Rollback

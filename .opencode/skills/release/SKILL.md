@@ -144,7 +144,7 @@ TESTED_SHA="<sha-from-step-1>"
 # === Gate 3. Compose validation (mirrors CI, production config) ===
 echo "[release] Validating compose files..."
 HOST_SHARE_PATH=/tmp/ci-share SHARE_PREFIX=files PUBLIC_URL=https://example.test \
-  ADMIN_PATH="ci-${TESTED_SHA:0:12}" IMAGE_TAG="sha-${TESTED_SHA}" \
+  ADMIN_TOKEN="ci-${TESTED_SHA:0:12}" IMAGE_TAG="sha-${TESTED_SHA}" \
   SFTP_ADMIN_PASSWORD=dummy \
   docker compose -f docker-compose.yml config > /dev/null
 RELEASE_RID="config-check" \
@@ -169,7 +169,7 @@ docker build --tag "$SMOKE_IMAGE" --file Dockerfile.smoke .
 docker run --rm --network "${RID}_default" \
   -e BASE=http://file-sharing:8080 \
   -e LINK_PREFIX=http://file-sharing:8080 \
-  -e ADMIN_PATH=admin123456 \
+  -e ADMIN_TOKEN=[REDACTED:API key param] \
   "$SMOKE_IMAGE"
 docker image rm "$SMOKE_IMAGE" >/dev/null
 trap - ERR

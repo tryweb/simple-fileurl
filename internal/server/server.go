@@ -1,15 +1,14 @@
 package server
 
 import (
-	"crypto/subtle"
 	"errors"
-	"html/template"
 	"net/http"
 	"os"
 	"path"
 	"strings"
 
 	"simple-fileurl/internal/config"
+	"simple-fileurl/internal/links"
 	"simple-fileurl/internal/store"
 )
 
@@ -17,16 +16,25 @@ import (
 type Server struct {
 	cfg   config.Config
 	store *store.Store
+	links *links.Store
 	mux   *http.ServeMux
 }
 
 // New creates a Server. Callers must ensure cfg is valid.
-func New(cfg config.Config, st *store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, mux: http.NewServeMux()}
+func New(cfg config.Config, st *store.Store, ls *links.Store) *Server {
+	s := &Server{cfg: cfg, store: st, links: ls, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
-	s.mux.HandleFunc("GET /", s.handleIndex)
-	s.mux.HandleFunc("POST /", s.handleIndex)
+	s.mux.HandleFunc("GET /", s.handleEmpty)
+	s.mux.HandleFunc("POST /", s.handleEmpty)
 	s.mux.HandleFunc("GET /{dirHash}/{fileHash}", s.handleDownload)
+	s.mux.HandleFunc("POST /api/links", s.handleLinksCreate)
+	s.mux.HandleFunc("GET /api/links", s.handleLinksList)
+	s.mux.HandleFunc("GET /api/links/{id}", s.handleLinkGet)
+	s.mux.HandleFunc("PATCH /api/links/{id}", s.handleLinkPatch)
+	s.mux.HandleFunc("DELETE /api/links/{id}", s.handleLinkDelete)
+	s.mux.HandleFunc("GET /l/{id}", s.handleLinkPage)
+	s.mux.HandleFunc("POST /l/{id}/auth", s.handleLinkAuth)
+	s.mux.HandleFunc("GET /l/{id}/files", s.handleLinkFiles)
 	return s
 }
 
@@ -99,88 +107,9 @@ func safeFilename(name string) string {
 	return `"` + clean + `"`
 }
 
-var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>File sharing</title></head>
-<body>
-<h1>Shared files</h1>
-<p>Hash target: {{.HashTarget}}; algorithm: {{.HashAlgorithm}}</p>
-{{if .Entries}}
-<ul>
-{{range .Entries}}<li>{{.LogicalPath}}<br><a href="{{.URL}}">{{.URL}}</a></li>
-{{end}}</ul>
-{{else}}
-<p>No files available.</p>
-{{end}}
-</body>
-</html>`))
-
-type indexEntry struct {
-	LogicalPath string
-	URL         string
-}
-
-type indexData struct {
-	HashTarget    string
-	HashAlgorithm string
-	Entries       []indexEntry
-}
-
-// passwordTemplate renders the password gate. It posts back to the admin
-// path so the password travels in the request body, not the URL.
-var passwordTemplate = template.Must(template.New("password").Parse(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Password required</title></head>
-<body>
-<h1>Password required</h1>
-<form method="post" action="">
-<input type="password" name="password" autocomplete="current-password">
-<button type="submit">Show files</button>
-</form>
-</body>
-</html>`))
-
-// checkAdminPassword compares the caller-supplied password with the
-// configured one in constant time.
-func checkAdminPassword(got, want string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
-}
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// The listing exists only at the configured secret path. Anything
-	// else — including "/" — returns 200 with no content, revealing
-	// nothing about the service or the shared files.
-	if s.cfg.AdminPath == "" || r.URL.Path != "/"+s.cfg.AdminPath {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	// The password gate is active only when a password is configured.
-	// The form posts back to the same path so the secret stays out of
-	// the URL query string; a query value works too.
-	if s.cfg.AdminPassword != "" &&
-		!checkAdminPassword(r.FormValue("password"), s.cfg.AdminPassword) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = passwordTemplate.Execute(w, nil)
-		return
-	}
-	entries, err := s.store.List()
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	data := indexData{HashTarget: s.cfg.HashTarget, HashAlgorithm: s.cfg.HashAlgorithm}
-	for _, e := range entries {
-		data.Entries = append(data.Entries, indexEntry{
-			LogicalPath: e.LogicalPath,
-			URL:         s.cfg.ShareURL(e.DirHash, e.FileHash),
-		})
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := indexTemplate.Execute(w, data); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	}
+// handleEmpty is the catch-all for index paths: 200 with no content,
+// revealing nothing about the service or the shared files. File listings
+// live behind scoped share links at /l/:linkId.
+func (s *Server) handleEmpty(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
 }

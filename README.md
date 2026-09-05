@@ -15,10 +15,9 @@ curl -fsSL https://raw.githubusercontent.com/tryweb/simple-fileurl/vX.Y.Z/instal
 ```
 
 The installer prompts for `HOST_SHARE_PATH`, `SHARE_PREFIX`, `PUBLIC_URL`,
-`ADMIN_PATH`, `IMAGE_TAG`, and `SFTP_ADMIN_PASSWORD`. For a local checkout,
-run `./install.sh` instead. After installation, open
-`http://localhost:8080/<ADMIN_PATH>/` for the file listing and
-`http://127.0.0.1:8081/` for the Admin UI.
+`ADMIN_TOKEN`, `IMAGE_TAG`, and `SFTP_ADMIN_PASSWORD`. For a local checkout,
+run `./install.sh` instead. After installation, create a share link via the
+link API (see docs/usage.md) and open `http://127.0.0.1:8081/` for the Admin UI.
 
 Existing installations can be upgraded with:
 
@@ -39,8 +38,8 @@ non-interactive setup, backups, rollback, and release-tag details.
 | `PUBLIC_URL`     | Service | External base URL for rendered links (e.g. `https://weurl.everplast.net`). Required. Trailing slashes are trimmed. |
 | `HASH_TARGET`    | Service | `file` (hash contents, default) or `filename` (hash basename). |
 | `HASH_ALGORITHM` | Service | `md5` (default, 32 hex chars) or `sha256` (64 hex chars). |
-| `ADMIN_PATH`     | Service | Required per-host secret path for the file listing. |
-| `ADMIN_PASSWORD` | Service | Optional extra password for the file listing. |
+| `ADMIN_TOKEN`    | Service | Required Bearer token for the share-link management API (`/api/links`). |
+| `LINKS_DIR`      | Service | Directory holding `links.json` (default `/var/lib/file-links`, on the `file-links` volume). |
 | `PORT`           | Compose | Host-side published port (default `8080`). The container always listens on `8080`. |
 | `IMAGE_TAG`      | Compose | Required immutable `vX.Y.Z` or `sha-<hex>` release tag. |
 | `SFTP_PORT`      | Compose | Host-side SFTP port (default `2222`; container listens on `22`). |

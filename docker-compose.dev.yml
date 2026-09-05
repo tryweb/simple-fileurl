@@ -31,6 +31,8 @@ services:
     volumes:
       # share-init copies the fixture into a root-owned volume for OpenSSH.
       - share-data:/opt/sharefiles:ro
+      # Named volume holding links.json for the share-link system.
+      - file-links:/var/lib/file-links:rw
     env_file:
       - path: .env
         required: false
@@ -40,8 +42,8 @@ services:
       PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${PORT:-18080}}"
       HASH_TARGET: "${HASH_TARGET:-file}"
       HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
-      ADMIN_PATH: "${ADMIN_PATH:-admin123456}"
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-dev-admin-token}"
+      LINKS_DIR: /var/lib/file-links
       WEB_GID: "${WEB_GID:-2001}"
       PORT: "8080"
     healthcheck:
@@ -104,3 +106,4 @@ services:
 volumes:
   share-data:
   sftp-users:
+  file-links:

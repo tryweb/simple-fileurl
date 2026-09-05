@@ -86,7 +86,7 @@ jobs:
       - name: Validate compose files
         run: |
           HOST_SHARE_PATH=/tmp/ci-share SHARE_PREFIX=files PUBLIC_URL=https://example.test \
-            ADMIN_PATH=ci-${GITHUB_SHA} IMAGE_TAG=sha-${GITHUB_SHA} \
+            ADMIN_TOKEN=ci-token IMAGE_TAG=sha-${GITHUB_SHA} \
             SFTP_ADMIN_PASSWORD=dummy \
             docker compose -f docker-compose.yml config > /dev/null
           docker compose -f docker-compose.dev.yml config > /dev/null

@@ -7,21 +7,18 @@ services:
       # Host data directory containing the SHARE_PREFIX subtree, mounted
       # read-only at the fixed container path.
       - "${HOST_SHARE_PATH:?HOST_SHARE_PATH is required}:/opt/sharefiles:ro"
+      # Named volume holding links.json for the share-link system.
+      - "file-links:/var/lib/file-links:rw"
     environment:
       SHARE_ROOT: /opt/sharefiles
       SHARE_PREFIX: "${SHARE_PREFIX:?SHARE_PREFIX is required}"
       PUBLIC_URL: "${PUBLIC_URL:?PUBLIC_URL is required}"
       HASH_TARGET: "${HASH_TARGET:-file}"
       HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
-      # Secret single-segment path where the file listing is served
-      # (e.g. ADMIN_PATH=admin123456 exposes GET /admin123456).
-      # Empty disables the listing entirely; "/" always returns 200
-      # with an empty body.
-      ADMIN_PATH: "${ADMIN_PATH:?ADMIN_PATH is required}"
-      # Optional extra gate: when set, the admin path requires this
-      # password (submitted via the password form) before showing files.
-      # Empty means the secret path alone is sufficient.
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # Bearer token for the share-link management API (/api/links).
+      ADMIN_TOKEN: "${ADMIN_TOKEN:?ADMIN_TOKEN is required}"
+      # Directory holding links.json, on the file-links named volume.
+      LINKS_DIR: /var/lib/file-links
       WEB_GID: "${WEB_GID:-2001}"
       PORT: "8080"
     # Supplementary group granting read access to per-user directories
@@ -78,3 +75,4 @@ services:
 
 volumes:
   sftp-users:
+  file-links:

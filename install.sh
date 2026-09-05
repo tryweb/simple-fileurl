@@ -74,18 +74,18 @@ required_values_present() {
   [ -n "$(env_value HOST_SHARE_PATH)" ] &&
     [ -n "$(env_value PUBLIC_URL)" ] &&
     [ -n "$(env_value SFTP_ADMIN_PASSWORD)" ] &&
-    [ -n "$(env_value ADMIN_PATH)" ] &&
+    [ -n "$(env_value ADMIN_TOKEN)" ] &&
     [ -n "$(env_value IMAGE_TAG)" ]
 }
 
 validate_release_values() {
-  local image_tag admin_path
+  local image_tag admin_token
   image_tag=$(env_value IMAGE_TAG)
-  admin_path=$(env_value ADMIN_PATH)
+  admin_token=$(env_value ADMIN_TOKEN)
   printf '%s\n' "$image_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$|^sha-[0-9a-fA-F]{7,64}$' \
     || fail 'IMAGE_TAG must be an immutable vX.Y.Z or sha-<hex> release tag'
-  printf '%s\n' "$admin_path" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._~-]{7,127}$' \
-    || fail 'ADMIN_PATH must be 8-128 URL-safe characters'
+  [ -n "$admin_token" ] \
+    || fail 'ADMIN_TOKEN must not be empty'
 }
 
 require_docker() {
@@ -226,9 +226,9 @@ main() {
   prompt_value HOST_SHARE_PATH 'Host share directory'
   prompt_value SHARE_PREFIX 'SFTP logical prefix' files
   prompt_value PUBLIC_URL 'Public base URL'
-  prompt_value ADMIN_PATH 'File listing path'
   prompt_value IMAGE_TAG 'Release image tag'
   prompt_secret SFTP_ADMIN_PASSWORD 'SFTP Admin password'
+  prompt_secret ADMIN_TOKEN 'Share-link API token'
   validate_release_values
   prepare_share
   docker compose config >/dev/null

@@ -8,10 +8,28 @@ The web service exposes:
 |---|---|
 | `GET /healthz` | `200` with `{"status":"ok"}` when the share is usable |
 | `GET /<directory-hash>/<file-hash>` | File download, or `400`/`404`/`409` for invalid, missing, or ambiguous links |
-| `GET /<ADMIN_PATH>` | Optional protected file listing |
-| `GET /` | Empty `200` response when listing is gated or disabled |
+| `GET /` | Empty `200` response revealing nothing |
+| `POST /api/links` | Create a share link (Bearer `ADMIN_TOKEN`); body sets scope, optional password, expiry, description |
+| `GET /api/links` | List share links (Bearer `ADMIN_TOKEN`) |
+| `GET /api/links/:id` / `PATCH /api/links/:id` / `DELETE /api/links/:id` | View, update, or delete one link (Bearer `ADMIN_TOKEN`) |
+| `GET /l/:linkId` | Scoped file listing; password form (401) when the link has a password |
+| `POST /l/:linkId/auth` | Submit a link password; sets a 24h session cookie, redirects to the listing |
+| `GET /l/:linkId/files` | Filtered file list as JSON (session cookie required for protected links) |
 
 Hash links are bearer links. Treat them as credentials and protect the public URL with TLS.
+
+Create a link for user `jonathan` (visible: `files/` plus `jonathan/`):
+
+```bash
+curl -sf -X POST http://localhost:8080/api/links \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":{"type":"user","user":"jonathan"},"description":"Jonathan files"}'
+```
+
+Use `"scope":{"type":"admin"}` for a link that sees every namespace. Add
+`"password":"..."` to protect a link and `"expires_at":"2026-12-31T23:59:59Z"`
+to expire it.
 
 ## Admin UI
 

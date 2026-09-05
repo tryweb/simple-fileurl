@@ -85,6 +85,7 @@ starting or modifying a deployment.
 ```bash
     SHARE_PREFIX=files \
     PUBLIC_URL=https://example.test \
+    ADMIN_TOKEN=dummy \
     SFTP_ADMIN_PASSWORD=dummy \
     docker compose -f docker-compose.yml config
 

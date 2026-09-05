@@ -22,16 +22,16 @@ func TestLoadValid(t *testing.T) {
 		"HASH_TARGET":    "file",
 		"HASH_ALGORITHM": "md5",
 		"PORT":           "8080",
-		"ADMIN_PATH":     "admin123456",
-		"ADMIN_PASSWORD": "s3cret!",
+		"ADMIN_TOKEN":    "link-admin-token",
+		"LINKS_DIR":      "/var/lib/file-links",
 		"WEB_GID":        "2001",
 	}
 	cfg, err := loadFromEnv(func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.AdminPath != "admin123456" || cfg.AdminPassword != "s3cret!" {
-		t.Fatalf("admin config not loaded: %+v", cfg)
+	if cfg.AdminToken != "link-admin-token" || cfg.LinksDir != "/var/lib/file-links" {
+		t.Fatalf("link config not loaded: %+v", cfg)
 	}
 	if cfg.ShareURL("abc", "def") != "https://weurl.everplast.net/abc/def" {
 		t.Fatalf("ShareURL not normalized: %q", cfg.ShareURL("abc", "def"))
@@ -52,20 +52,18 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		"HASH_TARGET":    "file",
 		"HASH_ALGORITHM": "md5",
 		"PORT":           "8080",
+		"ADMIN_TOKEN":    "link-admin-token",
 	}
 	cases := map[string]map[string]string{
-		"bad target":     {"HASH_TARGET": "random"},
-		"bad algorithm":  {"HASH_ALGORITHM": "sha1"},
-		"bad prefix":     {"SHARE_PREFIX": "../etc"},
-		"abs prefix":     {"SHARE_PREFIX": "/files"},
-		"empty prefix":   {"SHARE_PREFIX": ""},
-		"bad port":       {"PORT": "http"},
-		"short admin":    {"ADMIN_PATH": "short"},
-		"admin slash":    {"ADMIN_PATH": "a/b/cdefgh"},
-		"admin back":     {"ADMIN_PATH": `a\bcd1234`},
-		"admin reserved": {"ADMIN_PATH": "healthz"},
-		"admin space":    {"ADMIN_PATH": "has space1"},
-		"bad web gid":    {"WEB_GID": "notanumber"},
+		"bad target":    {"HASH_TARGET": "random"},
+		"bad algorithm": {"HASH_ALGORITHM": "sha1"},
+		"bad prefix":    {"SHARE_PREFIX": "../etc"},
+		"abs prefix":    {"SHARE_PREFIX": "/files"},
+		"empty prefix":  {"SHARE_PREFIX": ""},
+		"bad port":      {"PORT": "http"},
+		"missing token": {"ADMIN_TOKEN": ""},
+		"rel links":     {"LINKS_DIR": "relative/links"},
+		"bad web gid":   {"WEB_GID": "notanumber"},
 	}
 	for name, override := range cases {
 		env := map[string]string{}
@@ -89,6 +87,8 @@ func TestMissingRootReported(t *testing.T) {
 		HashTarget:    "file",
 		HashAlgorithm: "md5",
 		Port:          "8080",
+		AdminToken:    "link-admin-token",
+		LinksDir:      "/var/lib/file-links",
 		WebGID:        "2001",
 	}
 	if err := cfg.Validate(); err != nil {
@@ -154,27 +154,21 @@ func TestCheckFilesystem(t *testing.T) {
 	}
 }
 
-func TestValidateAdminPath(t *testing.T) {
-	valid := []string{"", "admin123456", "x9-_.~abc"}
-	for _, p := range valid {
-		if err := ValidateAdminPath(p); err != nil {
-			t.Fatalf("%q: unexpected error %v", p, err)
-		}
+func TestLinksDirDefault(t *testing.T) {
+	env := map[string]string{
+		"SHARE_ROOT":     "/opt/sharefiles",
+		"SHARE_PREFIX":   "files",
+		"PUBLIC_URL":     "https://example.test",
+		"HASH_TARGET":    "file",
+		"HASH_ALGORITHM": "md5",
+		"PORT":           "8080",
+		"ADMIN_TOKEN":    "link-admin-token",
 	}
-	invalid := []string{
-		"short",
-		"a/b/cdefgh",
-		`a\bcd1234`,
-		"healthz",
-		".",
-		"..",
-		"has space1",
-		"trailing!",
-		strings.Repeat("a", 129),
+	cfg, err := loadFromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	for _, p := range invalid {
-		if err := ValidateAdminPath(p); err == nil {
-			t.Fatalf("%q: expected error", p)
-		}
+	if cfg.LinksDir != DefaultLinksDir {
+		t.Fatalf("LinksDir default: %q", cfg.LinksDir)
 	}
 }
