@@ -34,6 +34,9 @@ func run() error {
 	if err := seedIfAbsent(st, cfg); err != nil {
 		return err
 	}
+	if err := sftpadmin.SeedSharedConfig(cfg.SharedPath, nil); err != nil {
+		return err
+	}
 	srv := sftpadmin.NewServer(cfg, st)
 	log.Printf("sftp-admin listening on %s manifest=%s", cfg.Addr, cfg.UsersFile)
 	return http.ListenAndServe(cfg.Addr, srv)

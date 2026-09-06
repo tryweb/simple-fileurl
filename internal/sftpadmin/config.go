@@ -10,7 +10,12 @@ package sftpadmin
 import (
 	"errors"
 	"os"
+	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
+
+	"simple-fileurl/internal/config"
 )
 
 // DefaultUsersFile is the only manifest path the admin reads and writes.
@@ -32,6 +37,9 @@ type Config struct {
 	// when the manifest file does not exist yet. Both must be set together.
 	SeedUser   string
 	SeedPubKey string
+	// SharedPath is the shared config.json location read for live
+	// settings. Defaults to config.DefaultSharedConfigPath.
+	SharedPath string
 }
 
 // LoadConfig reads configuration from the environment. A missing
@@ -46,9 +54,20 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		UsersFile:  getenv("SFTP_USERS_FILE"),
 		SeedUser:   getenv("SFTP_SEED_USER"),
 		SeedPubKey: getenv("SFTP_SEED_PUBKEY"),
+		SharedPath: getenv("SHARED_CONFIG_PATH"),
 	}
+	if cfg.SharedPath == "" {
+		cfg.SharedPath = config.DefaultSharedConfigPath
+	}
+	if !path.IsAbs(cfg.SharedPath) {
+		return Config{}, errors.New("sftpadmin: SHARED_CONFIG_PATH must be an absolute path")
+	}
+	// The password may come from the environment or the shared config
+	// file; with neither source the container fails fast.
 	if cfg.Password == "" {
-		return Config{}, errors.New("sftpadmin: SFTP_ADMIN_PASSWORD is required")
+		if sc, err := config.LoadShared(cfg.SharedPath); err != nil || sc.SftpAdminPassword == "" {
+			return Config{}, errors.New("sftpadmin: SFTP_ADMIN_PASSWORD is required")
+		}
 	}
 	if cfg.Addr == "" {
 		cfg.Addr = DefaultAddr
@@ -70,4 +89,77 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// SeedSharedConfig creates the shared config file from environment values
+// on first boot. An existing file is never touched. Hash settings fall
+// back to the file-sharing defaults; the two secrets are required, so a
+// missing token or password fails fast instead of seeding a broken file.
+func SeedSharedConfig(path string, getenv func(string) string) error {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if err := prepareSharedPermissions(path, getenv("WEB_GID")); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	port := getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	publicURL := getenv("PUBLIC_URL")
+	if publicURL == "" {
+		publicURL = "http://localhost:" + port
+	}
+	algo := getenv("HASH_ALGORITHM")
+	if algo == "" {
+		algo = "md5"
+	}
+	target := getenv("HASH_TARGET")
+	if target == "" {
+		target = "file"
+	}
+	return config.SharedConfig{
+		HashAlgorithm:     algo,
+		HashTarget:        target,
+		PublicURL:         publicURL,
+		AdminToken:        getenv("ADMIN_TOKEN"),
+		SftpAdminPassword: getenv("SFTP_ADMIN_PASSWORD"),
+	}.Save(path)
+}
+
+func prepareSharedPermissions(filePath, gidText string) error {
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		return err
+	}
+	if gidText != "" {
+		gid, err := strconv.Atoi(gidText)
+		if err != nil || gid < 0 {
+			return errors.New("sftpadmin: WEB_GID must be a non-negative integer")
+		}
+		if err := os.Chown(dir, -1, gid); err != nil {
+			return err
+		}
+	}
+	if err := os.Chmod(dir, 0o2770); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if gidText != "" {
+		gid, _ := strconv.Atoi(gidText)
+		if err := os.Chown(filePath, -1, gid); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(filePath, 0o640)
 }
