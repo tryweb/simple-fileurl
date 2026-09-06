@@ -234,7 +234,7 @@ main() {
   docker compose config >/dev/null
   start_services
   info "Web health: $(env_value PUBLIC_URL)/healthz"
-  info "Admin UI: http://127.0.0.1:$(env_value SFTP_ADMIN_PORT 8081)"
+  info "Admin UI: http://<host>:$(env_value SFTP_ADMIN_PORT 8081) (remote-accessible by default; protect with TLS/private network/firewall)"
   info "SFTP port: $(env_value SFTP_PORT 2222)"
 }
 
