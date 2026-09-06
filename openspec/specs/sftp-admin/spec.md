@@ -10,6 +10,8 @@
 
 The `sftp-admin` service SHALL serve its UI over HTTP on a dedicated Host-side port, bind to localhost by default, and SHALL require `SFTP_ADMIN_PASSWORD` before showing or mutating anything. Unauthenticated requests to management endpoints SHALL be rejected. The service SHALL fail fast when the password is missing, and production deployment documentation SHALL require TLS or a private network before exposing the UI beyond localhost.
 
+The UI SHALL present a structured layout with sidebar or top navigation linking to all available pages (Users, Settings). All pages SHALL share a consistent header with the service name and a Sign out button.
+
 #### Scenario: Login gate
 
 - **WHEN** a client opens the admin UI without a valid admin session
@@ -24,6 +26,11 @@ The `sftp-admin` service SHALL serve its UI over HTTP on a dedicated Host-side p
 
 - **WHEN** the admin container starts without `SFTP_ADMIN_PASSWORD`
 - **THEN** it exits non-zero and logs the missing configuration without serving management endpoints
+
+#### Scenario: Navigation is visible after login
+
+- **WHEN** an authenticated admin views any page
+- **THEN** a navigation bar or sidebar shows links to Users and Settings pages
 
 ### Requirement: Bounded authenticated admin sessions
 
