@@ -4,11 +4,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"simple-fileurl/internal/config"
 )
 
 const testPassword = "correct-horse-admin"
@@ -208,5 +211,177 @@ func TestConfigRequiresPassword(t *testing.T) {
 	}
 	if cfg.Addr != DefaultAddr || cfg.UsersFile != DefaultUsersFile {
 		t.Errorf("defaults = %+v, want :8080 + manifest default", cfg)
+	}
+}
+
+func TestConfigPasswordFromSharedFile(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "config.json")
+	sc := config.SharedConfig{
+		HashAlgorithm:     "md5",
+		HashTarget:        "file",
+		PublicURL:         "https://example.test",
+		AdminToken:        "tok",
+		SftpAdminPassword: "file-pw",
+	}
+	if err := sc.Save(shared); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(func(k string) string {
+		if k == "SHARED_CONFIG_PATH" {
+			return shared
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("env password empty but shared file provides it: %v", err)
+	}
+	srv := NewServer(cfg, NewStore(filepath.Join(dir, "users.json")))
+	if !srv.checkLoginPassword("file-pw") {
+		t.Error("shared file password rejected")
+	}
+	if srv.checkLoginPassword("nope") {
+		t.Error("wrong password accepted")
+	}
+}
+
+func TestSeedSharedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	env := map[string]string{
+		"HASH_ALGORITHM": "sha256", "HASH_TARGET": "file",
+		"PUBLIC_URL": "https://example.test", "ADMIN_TOKEN": "tok",
+		"SFTP_ADMIN_PASSWORD": "pw",
+	}
+	getenv := func(k string) string { return env[k] }
+	if err := SeedSharedConfig(path, getenv); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("seeded config mode = %o, want 640", got)
+	}
+	sc, err := config.LoadShared(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.HashAlgorithm != "sha256" || sc.SftpAdminPassword != "pw" {
+		t.Fatalf("seeded: %+v", sc)
+	}
+	// Existing files are never touched.
+	sentinel := config.SharedConfig{
+		HashAlgorithm: "md5", HashTarget: "filename",
+		PublicURL: "https://kept.test", AdminToken: "kept",
+		SftpAdminPassword: "kept",
+	}
+	if err := sentinel.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedSharedConfig(path, getenv); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("existing config mode = %o, want 640", got)
+	}
+	kept, err := config.LoadShared(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept != sentinel {
+		t.Fatalf("existing file overwritten: %+v", kept)
+	}
+	// Missing secrets fail instead of seeding a broken file.
+	if err := SeedSharedConfig(filepath.Join(t.TempDir(), "c.json"), func(string) string { return "" }); err == nil {
+		t.Fatal("missing secrets: expected error")
+	}
+}
+
+func TestCheckPasswordAgainstFailsClosedOnEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		got, want string
+		ok        bool
+	}{
+		{"", "", false},
+		{"", "pw", false},
+		{"pw", "", false},
+		{"pw", "other", false},
+		{"pw", "pw", true},
+	} {
+		if got := checkPasswordAgainst(tc.got, tc.want); got != tc.ok {
+			t.Errorf("checkPasswordAgainst(%q, %q) = %v, want %v", tc.got, tc.want, got, tc.ok)
+		}
+	}
+	if newAuthState("").checkPassword("") {
+		t.Error("empty authState accepted empty candidate")
+	}
+	if newAuthState("").checkPassword("anything") {
+		t.Error("empty authState accepted a candidate")
+	}
+	if newAuthState(testPassword).checkPassword("") {
+		t.Error("empty candidate accepted against configured password")
+	}
+}
+
+func TestLoginRejectsEmptyPassword(t *testing.T) {
+	srv := newTestServer(t)
+	form := url.Values{"password": {""}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), "Wrong password") {
+		t.Error("empty password must re-render the prompt with an error")
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == sessionCookieName && c.Value != "" && c.MaxAge >= 0 {
+			t.Error("empty password must not create a session")
+		}
+	}
+}
+
+func TestLoginRejectsEmptyPasswordWithSharedFallback(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "config.json")
+	sc := config.SharedConfig{
+		HashAlgorithm:     "md5",
+		HashTarget:        "file",
+		PublicURL:         "https://example.test",
+		AdminToken:        "tok",
+		SftpAdminPassword: "file-pw",
+	}
+	if err := sc.Save(shared); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{Password: testPassword, SharedPath: shared}, NewStore(filepath.Join(dir, "users.json")))
+	if srv.checkLoginPassword("") {
+		t.Error("empty candidate accepted via shared-config fallback")
+	}
+	// A server misconstructed without any password still fails closed.
+	bare := NewServer(Config{SharedPath: filepath.Join(dir, "missing.json")}, NewStore(filepath.Join(dir, "u2.json")))
+	if bare.checkLoginPassword("") || bare.checkLoginPassword("anything") {
+		t.Error("passwordless server accepted a login")
+	}
+}
+
+func TestConfigRejectsRelativeSharedPath(t *testing.T) {
+	_, err := LoadConfig(func(k string) string {
+		switch k {
+		case "SFTP_ADMIN_PASSWORD":
+			return "x"
+		case "SHARED_CONFIG_PATH":
+			return "relative/path.json"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Error("relative SHARED_CONFIG_PATH accepted, want error")
 	}
 }

@@ -51,10 +51,25 @@ func newAuthState(password string) *authState {
 }
 
 // checkPassword compares the candidate against the configured password in
-// constant time.
+// constant time. An empty candidate never authenticates, even when the
+// configured password is itself empty: fail closed, never empty == empty.
 func (a *authState) checkPassword(got string) bool {
+	if got == "" {
+		return false
+	}
 	sum := sha256.Sum256([]byte(got))
 	return subtle.ConstantTimeCompare(sum[:], a.pwHash[:]) == 1
+}
+
+// checkPasswordAgainst compares a candidate against an explicit password in
+// constant time, for secrets resolved outside authState. Either side empty
+// fails closed: an unset configured secret must never accept a login.
+func checkPasswordAgainst(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	a, b := sha256.Sum256([]byte(got)), sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
 // loginAllowed reports whether ip may attempt another login.
