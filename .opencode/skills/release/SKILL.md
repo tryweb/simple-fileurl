@@ -169,7 +169,7 @@ docker build --tag "$SMOKE_IMAGE" --file Dockerfile.smoke .
 docker run --rm --network "${RID}_default" \
   -e BASE=http://file-sharing:8080 \
   -e LINK_PREFIX=http://file-sharing:8080 \
-  -e ADMIN_TOKEN=[REDACTED:API key param] \
+  -e ADMIN_TOKEN=dummy \
   "$SMOKE_IMAGE"
 docker image rm "$SMOKE_IMAGE" >/dev/null
 trap - ERR

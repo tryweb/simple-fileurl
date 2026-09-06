@@ -26,7 +26,7 @@ services:
       PUBLIC_URL: http://file-sharing:8080
       HASH_TARGET: file
       HASH_ALGORITHM: md5
-      ADMIN_TOKEN: [REDACTED:API key param]
+      ADMIN_TOKEN: dummy
       LINKS_DIR: /var/lib/file-links
 
   sftp:
@@ -43,3 +43,7 @@ services:
     ports: !reset []
     environment:
       SFTP_ADMIN_PASSWORD: dev-admin-password
+      HASH_TARGET: file
+      HASH_ALGORITHM: md5
+      PUBLIC_URL: http://file-sharing:8080
+      ADMIN_TOKEN: dummy
