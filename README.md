@@ -2,7 +2,7 @@
 
 Alpine-based web service that turns a mounted share directory into
 `PUBLIC_URL/<directory-hash>/<file-hash>` download links. The deployment also
-provides an isolated public-key-only SFTP upload service and localhost-bound
+provides an isolated public-key-only SFTP upload service and a remote-accessible
 admin UI for managing SFTP users.
 
 ## Quick start
@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/tryweb/simple-fileurl/vX.Y.Z/instal
 The installer prompts for `HOST_SHARE_PATH`, `SHARE_PREFIX`, `PUBLIC_URL`,
 `ADMIN_TOKEN`, `IMAGE_TAG`, and `SFTP_ADMIN_PASSWORD`. For a local checkout,
 run `./install.sh` instead. After installation, create a share link via the
-link API (see docs/usage.md) and open `http://127.0.0.1:8081/` for the Admin UI.
+link API (see docs/usage.md) and open `http://<host>:8081/` for the Admin UI.
 
 Existing installations can be upgraded with:
 
@@ -44,7 +44,7 @@ non-interactive setup, backups, rollback, and release-tag details.
 | `IMAGE_TAG`      | Compose | Required immutable `vX.Y.Z` or `sha-<hex>` release tag. |
 | `SFTP_PORT`      | Compose | Host-side SFTP port (default `2222`; container listens on `22`). |
 | `SFTP_GID`       | SFTP | Numeric group ID for the writable `SHARE_PREFIX` subtree (default `2000`). |
-| `SFTP_ADMIN_PORT`| Compose | Host-side admin UI port on `127.0.0.1` (default `8081`). |
+| `SFTP_ADMIN_PORT`| Compose | Host-side admin UI port (default `8081`, published on all interfaces). |
 | `SFTP_ADMIN_PASSWORD` | Admin | Required password for the SFTP admin UI. |
 | `SFTP_SEED_USER` / `SFTP_SEED_PUBKEY` | SFTP/Admin | Optional first SFTP user/key; used only when `sftp-users/users.json` is absent. |
 
@@ -88,14 +88,42 @@ restart. The web service continues to mount the same directory read-only.
 
 ## SFTP admin UI
 
-Open `http://127.0.0.1:8081/` after setting `SFTP_ADMIN_PASSWORD`. The UI can
+Open `http://<host>:8081/` after setting `SFTP_ADMIN_PASSWORD`. The UI can
 create users with generated Ed25519 keys, register external public keys, list
 fingerprints, and disable/enable users. A generated private key is delivered
 once and is never stored or recoverable; save it immediately, or revoke the
 user and generate a replacement.
 
-Do not publish the admin port to the public internet. Use a TLS reverse proxy
-or a private network for remote administration. Back up the `sftp-users`
+> [!CAUTION]
+> The Admin UI is published on all interfaces (`0.0.0.0`) by default. Do not
+> expose this HTTP endpoint directly to the public internet: put it behind a
+> TLS-terminating reverse proxy, or restrict it to a private network/VPN and a
+> host firewall. For example, allow only one trusted administrator IP:
+>
+> ```bash
+> SFTP_ADMIN_PORT="${SFTP_ADMIN_PORT:-8081}"
+> sudo ufw default deny incoming
+> sudo ufw allow from 192.0.2.10 to any port "$SFTP_ADMIN_PORT" proto tcp
+> ```
+>
+> Replace `192.0.2.10` with the administrator's real IP. Keep the port
+> parameter tied to the configured `SFTP_ADMIN_PORT`.
+>
+> To restore localhost-only access, create `docker-compose.override.yml` in
+> the project root. Requires Docker Compose v2.24.4 or newer; `!override`
+> replaces the base `ports` list instead of appending another entry:
+>
+> ```yaml
+> services:
+>   sftp-admin:
+>     ports: !override
+>       - "127.0.0.1:${SFTP_ADMIN_PORT:-8081}:8080"
+> ```
+>
+> Verify with `docker compose config`; the Admin service must show only the
+> `127.0.0.1:` mapping.
+
+Back up the `sftp-users`
 Docker volume; it contains the user manifest and public keys, but never private
 keys.
 
