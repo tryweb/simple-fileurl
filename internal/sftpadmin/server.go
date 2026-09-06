@@ -2,10 +2,13 @@ package sftpadmin
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"simple-fileurl/internal/config"
 )
 
 // pendingKeyTTL bounds how long a generated private key waits for its
@@ -25,6 +28,11 @@ type pendingKey struct {
 type Server struct {
 	store *Store
 	auth  *authState
+	// password is the startup admin password; the shared config file
+	// overrides it at login time when present.
+	password string
+	// sharedPath is the shared config.json location.
+	sharedPath string
 	// gen creates keypairs; replaceable in tests for determinism.
 	gen     func(comment string) (KeyPair, error)
 	mu      sync.Mutex
@@ -35,11 +43,13 @@ type Server struct {
 // NewServer wires routes. cfg.Password must already be validated non-empty.
 func NewServer(cfg Config, st *Store) *Server {
 	s := &Server{
-		store:   st,
-		auth:    newAuthState(cfg.Password),
-		gen:     GenerateEd25519KeyPair,
-		pending: map[string]pendingKey{},
-		mux:     http.NewServeMux(),
+		store:      st,
+		auth:       newAuthState(cfg.Password),
+		password:   cfg.Password,
+		sharedPath: cfg.SharedPath,
+		gen:        GenerateEd25519KeyPair,
+		pending:    map[string]pendingKey{},
+		mux:        http.NewServeMux(),
 	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
@@ -50,6 +60,8 @@ func NewServer(cfg Config, st *Store) *Server {
 	s.mux.HandleFunc("POST /users/add-key", s.handleAddKey)
 	s.mux.HandleFunc("POST /users/status", s.handleStatus)
 	s.mux.HandleFunc("GET /keys/download", s.handleDownload)
+	s.mux.HandleFunc("GET /settings", s.handleSettings)
+	s.mux.HandleFunc("POST /settings", s.handleSettingsSave)
 	return s
 }
 
@@ -117,7 +129,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
 		return
 	}
-	if !s.auth.checkPassword(r.FormValue("password")) {
+	if !s.checkLoginPassword(r.FormValue("password")) {
 		s.auth.recordFailure(ip)
 		renderLogin(w, "Wrong password.")
 		return
@@ -130,6 +142,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	setSessionCookie(w, id)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// checkLoginPassword compares the candidate against the shared config
+// password when present, falling back to the startup password.
+func (s *Server) checkLoginPassword(got string) bool {
+	want := s.password
+	if sc, err := config.LoadShared(s.sharedPath); err == nil && sc.SftpAdminPassword != "" {
+		want = sc.SftpAdminPassword
+	}
+	return checkPasswordAgainst(got, want)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +291,116 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// sharedConfigPath resolves the shared config file location.
+func (s *Server) sharedConfigPath() string {
+	if s.sharedPath != "" {
+		return s.sharedPath
+	}
+	return config.DefaultSharedConfigPath
+}
+
+// settingsGroups loads current values merged with registry metadata,
+// grouped by service in registry order.
+func (s *Server) settingsGroups() ([]settingsGroup, error) {
+	values, err := GetSettings(s.sharedConfigPath())
+	if err != nil {
+		return nil, err
+	}
+	var groups []settingsGroup
+	index := map[string]int{}
+	for _, v := range values {
+		i, ok := index[v.Service]
+		if !ok {
+			groups = append(groups, settingsGroup{Service: v.Service})
+			i = len(groups) - 1
+			index[v.Service] = i
+		}
+		groups[i].Items = append(groups[i].Items, v)
+	}
+	return groups, nil
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	groups, err := s.settingsGroups()
+	if err != nil {
+		http.Error(w, "cannot load settings", http.StatusInternalServerError)
+		return
+	}
+	renderSettings(w, settingsView{pageData: pageData{CSRF: sess.csrf}, Groups: groups})
+}
+
+// handleSettingsSave validates every submitted setting and persists them
+// as one transaction: secrets left empty keep their current value,
+// everything else is validated, and any failure leaves the file untouched.
+// Each saved change is logged with values redacted for secrets and never
+// includes session or CSRF material.
+func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	path := s.sharedConfigPath()
+	before, err := GetSettings(path)
+	if err != nil {
+		http.Error(w, "cannot load settings", http.StatusInternalServerError)
+		return
+	}
+	old := map[string]string{}
+	for _, v := range before {
+		old[v.Key] = v.Value
+	}
+	vals := map[string]string{}
+	for _, def := range SettingsRegistry {
+		if _, present := r.Form[def.Key]; present {
+			vals[def.Key] = strings.TrimSpace(r.FormValue(def.Key))
+		}
+	}
+	errs, err := ApplySettings(path, vals)
+	if err != nil {
+		http.Error(w, "cannot load settings", http.StatusInternalServerError)
+		return
+	}
+	var saved []string
+	for _, def := range SettingsRegistry {
+		if _, bad := errs[def.Key]; bad {
+			continue
+		}
+		if _, submitted := vals[def.Key]; !submitted {
+			continue
+		}
+		if vals[def.Key] == "" && def.IsSecret {
+			continue
+		}
+		saved = append(saved, def.Key)
+		display, prev := vals[def.Key], old[def.Key]
+		if def.IsSecret {
+			display, prev = "***", "***"
+		}
+		log.Printf("settings: updated %s from %q to %q", def.Key, prev, display)
+	}
+	groups, err := s.settingsGroups()
+	if err != nil {
+		http.Error(w, "cannot load settings", http.StatusInternalServerError)
+		return
+	}
+	v := settingsView{pageData: pageData{CSRF: sess.csrf}, Groups: groups}
+	if len(errs) > 0 {
+		v.Errors = errs
+	}
+	if len(saved) > 0 {
+		v.Notice = "Saved: " + strings.Join(saved, ", ")
+	}
+	renderSettings(w, v)
 }
 
 // handleDownload serves a generated private key exactly once: the lookup
