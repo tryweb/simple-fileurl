@@ -42,10 +42,13 @@ type fileCache struct {
 	hash  string
 }
 
-// Store scans the configured namespace and resolves hash URLs.
+// Store scans the configured namespace and resolves hash URLs. The live
+// configuration and the content-hash cache are guarded by mu: ListWith and
+// ResolveWith swap the whole config atomically, so concurrent readers never
+// observe a torn mix of two configurations or stale hashes.
 type Store struct {
 	cfg   config.Config
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	cache map[string]fileCache
 }
 
@@ -54,24 +57,72 @@ func New(cfg config.Config) *Store {
 	return &Store{cfg: cfg, cache: map[string]fileCache{}}
 }
 
-// NamespaceRoot returns the absolute scan root.
+// NamespaceRoot returns the absolute scan root. It takes the read lock so
+// concurrent live-config swaps in ListWith/ResolveWith cannot race it.
 func (s *Store) NamespaceRoot() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.namespaceRootLocked()
+}
+
+// namespaceRootLocked reports the scan root. Callers must hold mu.
+func (s *Store) namespaceRootLocked() string {
 	return filepath.FromSlash(s.cfg.NamespaceRoot())
 }
 
 // Check verifies the container share root exists and holds the shared
 // prefix directory. Per-user directories are optional.
 func (s *Store) Check() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.cfg.CheckFilesystem()
 }
 
 // List scans the namespace and returns shareable entries sorted by logical path.
 func (s *Store) List() ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.scan()
+}
+
+// setConfigLocked swaps the live configuration and drops the content-hash
+// cache whenever anything changed. Cache keys already carry the algorithm
+// and target, but clearing on swap bounds memory and guarantees a new
+// configuration never observes hashes computed under an older one.
+// Callers must hold the write lock.
+func (s *Store) setConfigLocked(cfg config.Config) {
+	if s.cfg != cfg {
+		s.cfg = cfg
+		s.cache = map[string]fileCache{}
+	}
+}
+
+// ListWith swaps in cfg for live config updates, then scans atomically:
+// one listing never mixes two configurations.
+func (s *Store) ListWith(cfg config.Config) ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setConfigLocked(cfg)
 	return s.scan()
 }
 
 // Resolve maps (dirHash, fileHash) to a file on disk.
 func (s *Store) Resolve(dirHash, fileHash string) (string, Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resolveLocked(dirHash, fileHash)
+}
+
+// ResolveWith swaps in cfg for live config updates, then resolves
+// atomically, so listing and download always agree on one configuration.
+func (s *Store) ResolveWith(cfg config.Config, dirHash, fileHash string) (string, Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setConfigLocked(cfg)
+	return s.resolveLocked(dirHash, fileHash)
+}
+
+func (s *Store) resolveLocked(dirHash, fileHash string) (string, Entry, error) {
 	if !hash.ValidHex(dirHash, s.cfg.HashAlgorithm) || !hash.ValidHex(fileHash, s.cfg.HashAlgorithm) {
 		return "", Entry{}, ErrInvalid
 	}
@@ -99,7 +150,7 @@ func (s *Store) Resolve(dirHash, fileHash string) (string, Entry, error) {
 }
 
 func (s *Store) scan() ([]Entry, error) {
-	root := s.NamespaceRoot()
+	root := s.namespaceRootLocked()
 	top, err := os.ReadDir(root)
 	if err != nil {
 		// A missing or unreadable root serves nothing; Check reports the
@@ -196,10 +247,12 @@ func (s *Store) scanNamespace(nsRoot, namespace string, entries *[]Entry) error 
 	})
 }
 
+// contentHash hashes file contents with a size+mtime cache. Callers must
+// hold mu: the cache key includes the algorithm and target so a live
+// config change never serves hashes computed under another configuration.
 func (s *Store) contentHash(abs string, info fs.FileInfo) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if c, ok := s.cache[abs]; ok && c.size == info.Size() && c.mtime == info.ModTime().UnixNano() {
+	key := abs + "\x00" + s.cfg.HashAlgorithm + "\x00" + s.cfg.HashTarget
+	if c, ok := s.cache[key]; ok && c.size == info.Size() && c.mtime == info.ModTime().UnixNano() {
 		return c.hash, nil
 	}
 	f, err := os.Open(abs)
@@ -211,14 +264,14 @@ func (s *Store) contentHash(abs string, info fs.FileInfo) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.cache[abs] = fileCache{size: info.Size(), mtime: info.ModTime().UnixNano(), hash: h}
+	s.cache[key] = fileCache{size: info.Size(), mtime: info.ModTime().UnixNano(), hash: h}
 	return h, nil
 }
 
 // openPath re-validates the resolved file: regular, non-symlink, inside an
 // eligible namespace. It returns the absolute path for streaming.
 func (s *Store) openPath(e Entry) (string, error) {
-	root := s.NamespaceRoot()
+	root := s.namespaceRootLocked()
 	// The logical path's first segment selects the namespace; only files
 	// in eligible namespaces (shared prefix or valid SFTP usernames)
 	// resolve.

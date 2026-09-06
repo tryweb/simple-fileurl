@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"simple-fileurl/internal/config"
@@ -266,5 +267,63 @@ func TestMultiUserResolveRoundTrip(t *testing.T) {
 		if string(body) != bodies[e.LogicalPath] || got.LogicalPath != e.LogicalPath {
 			t.Fatalf("resolved %+v body %q", got, body)
 		}
+	}
+}
+
+func TestConcurrentLiveConfigSwaps(t *testing.T) {
+	ns := fixture(t)
+	st := New(testConfig(ns, "file", "md5"))
+	cfgs := []config.Config{
+		testConfig(ns, "file", "md5"),
+		testConfig(ns, "filename", "md5"),
+		testConfig(ns, "file", "sha256"),
+		testConfig(ns, "filename", "sha256"),
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cfg := cfgs[i%len(cfgs)]
+			for j := 0; j < 25; j++ {
+				if root := st.NamespaceRoot(); root == "" {
+					t.Error("empty namespace root")
+					return
+				}
+				entries, err := st.ListWith(cfg)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if len(entries) == 0 {
+					t.Error("no entries listed")
+					return
+				}
+				if _, _, err := st.ResolveWith(cfg, entries[0].DirHash, entries[0].FileHash); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestLiveConfigSwapDropsStaleHashes(t *testing.T) {
+	ns := fixture(t)
+	st := New(testConfig(ns, "file", "md5"))
+	md5Entries, err := st.ListWith(testConfig(ns, "file", "md5"))
+	if err != nil || len(md5Entries) == 0 {
+		t.Fatalf("md5 list: %+v %v", md5Entries, err)
+	}
+	shaEntries, err := st.ListWith(testConfig(ns, "file", "sha256"))
+	if err != nil || len(shaEntries) == 0 {
+		t.Fatalf("sha256 list: %+v %v", shaEntries, err)
+	}
+	if md5Entries[0].FileHash == shaEntries[0].FileHash {
+		t.Fatal("config swap returned identical hashes for md5 and sha256")
+	}
+	if _, _, err := st.ResolveWith(testConfig(ns, "file", "sha256"), shaEntries[0].DirHash, shaEntries[0].FileHash); err != nil {
+		t.Fatalf("resolve under new config: %v", err)
 	}
 }
