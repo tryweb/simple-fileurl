@@ -8,7 +8,7 @@
 
 ### Requirement: Password-protected admin interface
 
-The `sftp-admin` service SHALL serve its UI over HTTP on a dedicated Host-side port, bind to localhost by default, and SHALL require `SFTP_ADMIN_PASSWORD` before showing or mutating anything. Unauthenticated requests to management endpoints SHALL be rejected. The service SHALL fail fast when the password is missing, and production deployment documentation SHALL require TLS or a private network before exposing the UI beyond localhost.
+The `sftp-admin` service SHALL serve its UI over HTTP on a dedicated Host-side port, bind to all host interfaces (`0.0.0.0`) by default for remote access, and SHALL require `SFTP_ADMIN_PASSWORD` before showing or mutating anything. Unauthenticated requests to management endpoints SHALL be rejected. The service SHALL fail fast when the password is missing, and production deployment documentation SHALL require a TLS reverse proxy or private network/VPN plus a host firewall before allowing access from untrusted networks.
 
 The UI SHALL present a structured layout with sidebar or top navigation linking to all available pages (Users, Settings). All pages SHALL share a consistent header with the service name and a Sign out button.
 
@@ -26,6 +26,11 @@ The UI SHALL present a structured layout with sidebar or top navigation linking 
 
 - **WHEN** the admin container starts without `SFTP_ADMIN_PASSWORD`
 - **THEN** it exits non-zero and logs the missing configuration without serving management endpoints
+
+#### Scenario: Remote admin binding is protected
+
+- **WHEN** the default Compose deployment publishes the admin port
+- **THEN** remote hosts can reach the UI through the host port, and deployment guidance requires TLS or a private network/VPN plus a host firewall before access from untrusted networks
 
 #### Scenario: Navigation is visible after login
 
