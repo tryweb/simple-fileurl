@@ -42,6 +42,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// effectiveConfig overlays the shared config file on the startup config.
+// A missing or invalid file leaves the startup config unchanged.
+func (s *Server) effectiveConfig() config.Config {
+	cfg := s.cfg
+	path := cfg.SharedPath
+	if path == "" {
+		path = config.DefaultSharedConfigPath
+	}
+	sc, err := config.LoadShared(path)
+	if err != nil {
+		return cfg
+	}
+	cfg.HashAlgorithm = sc.HashAlgorithm
+	cfg.HashTarget = sc.HashTarget
+	cfg.PublicURL = sc.PublicURL
+	cfg.AdminToken = sc.AdminToken
+	return cfg
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if err := s.store.Check(); err != nil {
 		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
@@ -55,7 +74,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	dirHash := r.PathValue("dirHash")
 	fileHash := r.PathValue("fileHash")
-	abs, entry, err := s.store.Resolve(dirHash, fileHash)
+	abs, entry, err := s.store.ResolveWith(s.effectiveConfig(), dirHash, fileHash)
 	switch {
 	case errors.Is(err, store.ErrInvalid):
 		http.Error(w, "invalid share link", http.StatusBadRequest)

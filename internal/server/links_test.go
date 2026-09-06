@@ -250,6 +250,68 @@ func mustCreateLink(t *testing.T, srv *Server, l links.Link) {
 	}
 }
 
+func pageDirHashes(t *testing.T, srv *Server, id string) []string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/l/"+id, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page: %d", rec.Code)
+	}
+	var hashes []string
+	chunks := strings.Split(rec.Body.String(), "https://example.test/")
+	for _, m := range chunks[1:] {
+		parts := strings.SplitN(m, "/", 2)
+		if len(parts) == 2 && len(parts[0]) >= 32 {
+			hashes = append(hashes, parts[0])
+		}
+	}
+	if len(hashes) == 0 {
+		t.Fatal("no dir hashes in page")
+	}
+	return hashes
+}
+
+func TestEffectiveConfigOverlay(t *testing.T) {
+	srv := testScopeServer(t)
+	mustCreateLink(t, srv, links.Link{ID: "admin1", Scope: links.Scope{Type: links.ScopeAdmin}, CreatedAt: time.Now()})
+
+	// Baseline uses the startup config (md5, 32 hex chars).
+	for _, h := range pageDirHashes(t, srv, "admin1") {
+		if len(h) != 32 {
+			t.Fatalf("baseline hash %q: want md5", h)
+		}
+	}
+
+	// A shared config file switches hashing without restart.
+	sc := config.SharedConfig{
+		HashAlgorithm:     "sha256",
+		HashTarget:        "file",
+		PublicURL:         "https://example.test",
+		AdminToken:        "test-token",
+		SftpAdminPassword: "x",
+	}
+	shared := filepath.Join(t.TempDir(), "config.json")
+	if err := sc.Save(shared); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.SharedPath = shared
+	for _, h := range pageDirHashes(t, srv, "admin1") {
+		if len(h) != 64 {
+			t.Fatalf("overlay hash %q: want sha256", h)
+		}
+	}
+
+	// A corrupt file falls back to the startup config.
+	if err := os.WriteFile(shared, []byte("{oops"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range pageDirHashes(t, srv, "admin1") {
+		if len(h) != 32 {
+			t.Fatalf("fallback hash %q: want md5", h)
+		}
+	}
+}
+
 func TestLinkPageScopeIsolation(t *testing.T) {
 	srv := testScopeServer(t)
 	mustCreateLink(t, srv, links.Link{ID: "admin1", Scope: links.Scope{Type: links.ScopeAdmin}, CreatedAt: time.Now()})

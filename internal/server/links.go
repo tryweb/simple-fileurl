@@ -21,23 +21,23 @@ import (
 // errInvalidLinkInput marks client-fixable link request errors.
 var errInvalidLinkInput = errors.New("invalid link request")
 
-// checkBearer compares the request's Bearer token with the configured
-// admin token in constant time.
-func (s *Server) checkBearer(r *http.Request) bool {
+// checkBearer compares the request's Bearer token with the given admin
+// token in constant time.
+func checkBearer(r *http.Request, token string) bool {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
-	if s.cfg.AdminToken == "" || !strings.HasPrefix(h, prefix) {
+	if token == "" || !strings.HasPrefix(h, prefix) {
 		return false
 	}
 	got := strings.TrimPrefix(h, prefix)
-	if len(got) != len(s.cfg.AdminToken) {
+	if len(got) != len(token) {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
 }
 
 func (s *Server) requireBearer(w http.ResponseWriter, r *http.Request) bool {
-	if s.checkBearer(r) {
+	if checkBearer(r, s.effectiveConfig().AdminToken) {
 		return true
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -80,7 +80,7 @@ func linkDetail(l links.Link) linkJSON {
 }
 
 func (s *Server) linkURL(id string) string {
-	return strings.TrimRight(s.cfg.PublicURL, "/") + "/l/" + id
+	return strings.TrimRight(s.effectiveConfig().PublicURL, "/") + "/l/" + id
 }
 
 type createLinkRequest struct {
@@ -265,8 +265,8 @@ func (s *Server) handleLinkDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // sharedTop is the first segment of the shared prefix (e.g. "files").
-func (s *Server) sharedTop() string {
-	prefix, err := config.NormalizePrefix(s.cfg.SharePrefix)
+func sharedTop(cfg config.Config) string {
+	prefix, err := config.NormalizePrefix(cfg.SharePrefix)
 	if err != nil {
 		return ""
 	}
@@ -275,11 +275,11 @@ func (s *Server) sharedTop() string {
 
 // filterByScope keeps entries visible to the link: admin sees everything,
 // a user link sees the shared prefix plus that user's directory.
-func (s *Server) filterByScope(entries []store.Entry, scope links.Scope) []store.Entry {
+func filterByScope(cfg config.Config, entries []store.Entry, scope links.Scope) []store.Entry {
 	if scope.Type == links.ScopeAdmin {
 		return entries
 	}
-	top := s.sharedTop()
+	top := sharedTop(cfg)
 	var out []store.Entry
 	for _, e := range entries {
 		seg, _, _ := strings.Cut(e.LogicalPath, "/")
@@ -337,7 +337,7 @@ func verifyLinkSession(cookie, id, key string) bool {
 
 // linkSessionOK reports whether the request may view the link: open links
 // always pass, protected links need a valid session cookie.
-func (s *Server) linkSessionOK(r *http.Request, l links.Link) bool {
+func linkSessionOK(cfg config.Config, r *http.Request, l links.Link) bool {
 	if !l.HasPassword() {
 		return true
 	}
@@ -345,7 +345,7 @@ func (s *Server) linkSessionOK(r *http.Request, l links.Link) bool {
 	if err != nil {
 		return false
 	}
-	return verifyLinkSession(c.Value, l.ID, s.cfg.AdminToken)
+	return verifyLinkSession(c.Value, l.ID, cfg.AdminToken)
 }
 
 var linkListTemplate = template.Must(template.New("linklist").Parse(`<!DOCTYPE html>
@@ -393,23 +393,24 @@ func (s *Server) handleLinkPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if !s.linkSessionOK(r, l) {
+	cfg := s.effectiveConfig()
+	if !linkSessionOK(cfg, r, l) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = linkPasswordTemplate.Execute(w, struct{ ID string }{ID: l.ID})
 		return
 	}
-	entries, err := s.store.List()
+	entries, err := s.store.ListWith(cfg)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	data := linkPageData{Description: l.Description}
-	for _, e := range s.filterByScope(entries, l.Scope) {
+	for _, e := range filterByScope(cfg, entries, l.Scope) {
 		data.Entries = append(data.Entries, linkEntry{
 			LogicalPath: e.LogicalPath,
 			Size:        e.Size,
-			URL:         s.cfg.ShareURL(e.DirHash, e.FileHash),
+			URL:         cfg.ShareURL(e.DirHash, e.FileHash),
 		})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -435,7 +436,7 @@ func (s *Server) handleLinkAuth(w http.ResponseWriter, r *http.Request) {
 	exp := time.Now().Add(24 * time.Hour)
 	http.SetCookie(w, &http.Cookie{
 		Name:     linkSessionCookieName(l.ID),
-		Value:    signLinkSession(l.ID, exp.Unix(), s.cfg.AdminToken),
+		Value:    signLinkSession(l.ID, exp.Unix(), s.effectiveConfig().AdminToken),
 		Path:     "/l/" + l.ID,
 		Expires:  exp,
 		MaxAge:   24 * 60 * 60,
@@ -466,24 +467,25 @@ func (s *Server) handleLinkFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if !s.linkSessionOK(r, l) {
+	cfg := s.effectiveConfig()
+	if !linkSessionOK(cfg, r, l) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	entries, err := s.store.List()
+	entries, err := s.store.ListWith(cfg)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	resp := linkFilesResponse{LinkID: l.ID, Scope: l.Scope, Files: []linkFileJSON{}}
-	for _, e := range s.filterByScope(entries, l.Scope) {
+	for _, e := range filterByScope(cfg, entries, l.Scope) {
 		resp.Files = append(resp.Files, linkFileJSON{
 			LogicalPath: e.LogicalPath,
 			LogicalDir:  e.LogicalDir,
 			DirHash:     e.DirHash,
 			FileHash:    e.FileHash,
 			Size:        e.Size,
-			URL:         s.cfg.ShareURL(e.DirHash, e.FileHash),
+			URL:         cfg.ShareURL(e.DirHash, e.FileHash),
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
