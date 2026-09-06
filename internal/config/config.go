@@ -33,6 +33,9 @@ type Config struct {
 	AdminToken string
 	// LinksDir is the directory holding links.json, on a named volume.
 	LinksDir string
+	// SharedPath overrides the shared config.json location read for live
+	// updates. Empty means DefaultSharedConfigPath.
+	SharedPath string
 	// WebGID is the group ID for the web readers group. Per-user
 	// directories are created with this group so the web service can
 	// read files while SFTP users cannot access other users' directories.
@@ -130,6 +133,7 @@ func loadFromEnv(getenv func(string) string) (Config, error) {
 		Port:          getenv("PORT"),
 		AdminToken:    getenv("ADMIN_TOKEN"),
 		LinksDir:      getenv("LINKS_DIR"),
+		SharedPath:    getenv("SHARED_CONFIG_PATH"),
 		WebGID:        getenv("WEB_GID"),
 	}
 	if cfg.ContainerRoot == "" {
@@ -184,6 +188,9 @@ func (c Config) Validate() error {
 	}
 	if c.LinksDir == "" || !path.IsAbs(c.LinksDir) {
 		return fmt.Errorf("invalid LINKS_DIR %q: must be an absolute path", c.LinksDir)
+	}
+	if c.SharedPath != "" && !path.IsAbs(c.SharedPath) {
+		return fmt.Errorf("invalid SHARED_CONFIG_PATH %q: must be an absolute path", c.SharedPath)
 	}
 	if _, err := strconv.Atoi(c.WebGID); err != nil {
 		return fmt.Errorf("invalid WEB_GID %q: must be a numeric GID", c.WebGID)
