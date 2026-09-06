@@ -54,7 +54,9 @@ func (s *Store) Load() (Manifest, error) {
 }
 
 // Update loads the manifest, applies fn, revalidates, and persists the
-// result atomically. fn's error aborts without touching the file.
+// result atomically. fn's error aborts without touching the file. The final
+// document is strictly validated, so writes never introduce invalid keys
+// even though reads tolerate legacy ones.
 func (s *Store) Update(fn func(*Manifest) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -69,7 +71,7 @@ func (s *Store) Update(fn func(*Manifest) error) error {
 	if m.Users == nil {
 		m.Users = []User{}
 	}
-	if err := validateManifest(m); err != nil {
+	if err := validateManifest(m, true); err != nil {
 		return err
 	}
 	return s.writeLocked(m)
@@ -87,7 +89,9 @@ func (s *Store) loadLocked() (Manifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return Manifest{}, fmt.Errorf("invalid manifest: %w", err)
 	}
-	if err := validateManifest(m); err != nil {
+	// Reads tolerate legacy invalid authorized keys so one bad entry
+	// cannot take down the users page; rendering marks them "(invalid)".
+	if err := validateManifest(m, false); err != nil {
 		return Manifest{}, err
 	}
 	return m, nil
@@ -129,8 +133,10 @@ func (s *Store) writeLocked(m Manifest) error {
 }
 
 // validateManifest enforces the deployment contract: version 1, valid and
-// unique usernames, and well-formed public keys only.
-func validateManifest(m Manifest) error {
+// unique usernames, and (strict only) well-formed public keys. Reads pass
+// strict=false so legacy invalid keys load and render as "(invalid)";
+// writes pass strict=true so no new invalid key is ever persisted.
+func validateManifest(m Manifest, strict bool) error {
 	if m.Version != ManifestVersion {
 		return fmt.Errorf("invalid manifest: unsupported version %d", m.Version)
 	}
@@ -144,13 +150,16 @@ func validateManifest(m Manifest) error {
 			return fmt.Errorf("invalid manifest: duplicate user %q", u.Username)
 		}
 		seen[u.Username] = true
+		if u.AuthorizedKeys == nil {
+			u.AuthorizedKeys = []string{}
+		}
+		if !strict {
+			continue
+		}
 		for _, k := range u.AuthorizedKeys {
 			if _, _, err := ValidatePublicKey(k); err != nil {
 				return fmt.Errorf("invalid manifest: user %q: %w", u.Username, err)
 			}
-		}
-		if u.AuthorizedKeys == nil {
-			u.AuthorizedKeys = []string{}
 		}
 	}
 	return nil

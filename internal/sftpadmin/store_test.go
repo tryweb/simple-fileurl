@@ -93,7 +93,6 @@ func TestStoreRejectsBadDocuments(t *testing.T) {
 		"reserved":    `{"version":1,"users":[{"username":"root","enabled":true}]}`,
 		"bad user":    `{"version":1,"users":[{"username":"UP","enabled":true}]}`,
 		"dup":         `{"version":1,"users":[{"username":"a","enabled":true},{"username":"a","enabled":true}]}`,
-		"bad key":     `{"version":1,"users":[{"username":"a","enabled":true,"authorized_keys":["nope"]}]}`,
 	} {
 		write(doc)
 		if _, err := st.Load(); err == nil {
@@ -102,6 +101,49 @@ func TestStoreRejectsBadDocuments(t *testing.T) {
 		if err := st.Update(func(_ *Manifest) error { return nil }); err == nil {
 			t.Errorf("%s: Update passthrough = nil, want error", name)
 		}
+	}
+}
+
+func TestStoreLoadToleratesLegacyInvalidKey(t *testing.T) {
+	st := tempStore(t)
+	if err := os.MkdirAll(filepath.Dir(st.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{"version":1,"users":[{"username":"a","enabled":true,"authorized_keys":["nope"]}]}`
+	if err := os.WriteFile(st.Path(), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Reads tolerate the legacy key so the users page keeps rendering.
+	m, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load with legacy invalid key = %v, want nil", err)
+	}
+	if len(m.Users) != 1 || len(m.Users[0].AuthorizedKeys) != 1 {
+		t.Fatalf("tolerated manifest = %+v, want user kept with its key", m)
+	}
+	// Explicit writes stay strict: a no-op update refuses to persist it.
+	if err := st.Update(func(_ *Manifest) error { return nil }); err == nil {
+		t.Fatal("Update passthrough over invalid key = nil, want error")
+	}
+	// And a write carrying a fresh invalid key is rejected without
+	// touching the file.
+	before, err := os.ReadFile(st.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.Update(func(m *Manifest) error {
+		m.Users[0].AuthorizedKeys = append(m.Users[0].AuthorizedKeys, "also-bad")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Update adding invalid key = nil, want error")
+	}
+	after, err := os.ReadFile(st.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("rejected key write modified the manifest file")
 	}
 }
 

@@ -223,3 +223,23 @@ func TestDisableEnable(t *testing.T) {
 		t.Errorf("unknown user = %d, want 404", code)
 	}
 }
+
+func TestUsersPageToleratesLegacyInvalidKey(t *testing.T) {
+	srv := newTestServer(t)
+	doc := `{"version":1,"users":[{"username":"legacy","enabled":true,"authorized_keys":["nope"]}]}`
+	if err := os.WriteFile(srv.store.Path(), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := loginAs(t, srv)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(sess)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("users page with legacy invalid key = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "legacy") || !strings.Contains(body, "(invalid)") {
+		t.Errorf("users page must render the legacy entry as invalid, got: %q", body)
+	}
+}
