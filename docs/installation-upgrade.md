@@ -6,7 +6,17 @@
 - `curl` or `wget` for the installer, plus `curl`, `sftp`, and `ssh` for checks.
 - A host data directory containing the `${SHARE_PREFIX}` subtree.
 - Permission to create/chown the host share as `root:root` and set its prefix group to `SFTP_GID`.
-- TLS termination or a private network before exposing Admin beyond localhost.
+- The Admin UI binds to `0.0.0.0:8081` by default. Before exposing it beyond a
+  trusted host, use a TLS-terminating reverse proxy or private network/VPN and
+  configure the host firewall to allow only one trusted administrator IP. For
+  example, replace `192.0.2.10` with the administrator's real IP and keep the
+  port tied to `SFTP_ADMIN_PORT`:
+
+  ```bash
+  SFTP_ADMIN_PORT="${SFTP_ADMIN_PORT:-8081}"
+  sudo ufw default deny incoming
+  sudo ufw allow from 192.0.2.10 to any port "$SFTP_ADMIN_PORT" proto tcp
+  ```
 
 ## Fast Install
 
@@ -111,6 +121,23 @@ Alternatively, leave the seed variables empty and create the first user
 through the Admin UI after installation.
 
 ## Upgrade
+
+> [!WARNING]
+> This release changes `sftp-admin` from localhost-only to remote-accessible
+> by default. Apply the TLS/private-network and firewall safeguards before
+> upgrading, or restore localhost-only access with this
+> `docker-compose.override.yml` in the project root. Docker Compose v2.24.4+
+> is required because `!override` replaces the base `ports` list:
+>
+> ```yaml
+> services:
+>   sftp-admin:
+>     ports: !override
+>       - "127.0.0.1:${SFTP_ADMIN_PORT:-8081}:8080"
+> ```
+>
+> Verify with `docker compose config`; the Admin service must show only the
+> `127.0.0.1:` mapping.
 
 `upgrade.sh` creates a timestamped backup of `docker-compose.yml` and `.env`,
 downloads the selected release's Compose definition, appends missing environment keys

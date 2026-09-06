@@ -33,7 +33,10 @@ to expire it.
 
 ## Admin UI
 
-Open `http://127.0.0.1:8081/` for a local Compose deployment and sign in with `SFTP_ADMIN_PASSWORD`.
+Open `http://<host>:8081/` (or `http://localhost:8081/` from the deployment host)
+and sign in with `SFTP_ADMIN_PASSWORD`. The default Compose binding is
+remote-accessible on `0.0.0.0`; use a TLS reverse proxy or private network/VPN
+and a host firewall before allowing access from untrusted networks.
 
 The UI supports:
 

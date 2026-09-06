@@ -10,7 +10,7 @@ The dev Compose file creates a `share-data` named volume. `share-init` copies `t
 Dev endpoints:
 
 - Web: `http://localhost:18080`
-- Admin: `http://127.0.0.1:18081`
+- Admin: `http://<host>:18081` (remote-accessible on `0.0.0.0` by default; protect with TLS/private network/firewall)
 - SFTP: `localhost:12222`
 - Default dev Admin password: `dev-admin-password`
 

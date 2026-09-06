@@ -36,7 +36,7 @@ flowchart LR
 
 ### `sftp-admin`
 
-- Binds to `127.0.0.1:${SFTP_ADMIN_PORT:-8081}` by default.
+- Binds to `0.0.0.0:${SFTP_ADMIN_PORT:-8081}` by default for remote access.
 - Requires `SFTP_ADMIN_PASSWORD`.
 - Is the only manifest writer and first-boot seeder.
 - Has no host share mount and does not access `/etc/passwd` or `/etc/ssh`.
@@ -81,4 +81,6 @@ Changing the host mount location does not change links as long as the logical tr
 - SFTP sessions have no password auth, shell, PTY, agent forwarding, TCP forwarding, or X11 forwarding.
 - The SFTP chroot prevents access to host absolute paths.
 - Admin private keys are never persisted or logged.
-- Remote Admin access must use TLS or a private network; do not expose the default localhost binding publicly.
+- Remote Admin access must use a TLS reverse proxy or a private network/VPN,
+  plus a host firewall rule limiting trusted administrator IPs. Never expose
+  the default HTTP binding directly to the public internet.
