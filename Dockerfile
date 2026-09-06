@@ -17,6 +17,9 @@ RUN apk add --no-cache ca-certificates \
     && addgroup -S -g ${WEB_GID} webreaders \
     && addgroup -S app && adduser -S -G app app \
     && addgroup app webreaders \
+    && mkdir -p /etc/app \
+    && chown app:webreaders /etc/app \
+    && chmod 2750 /etc/app \
     && mkdir -p /var/lib/file-links \
     && chown app:app /var/lib/file-links
 COPY --from=builder /out/fileurl /usr/local/bin/fileurl

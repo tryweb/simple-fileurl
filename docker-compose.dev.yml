@@ -33,6 +33,9 @@ services:
       - share-data:/opt/sharefiles:ro
       # Named volume holding links.json for the share-link system.
       - file-links:/var/lib/file-links:rw
+      # Named volume holding config.json for live settings. Read-only here:
+      # only sftp-admin seeds and rewrites it; file-sharing only reads.
+      - app-config:/etc/app:ro
     env_file:
       - path: .env
         required: false
@@ -90,11 +93,17 @@ services:
       - "127.0.0.1:${SFTP_ADMIN_PORT:-18081}:8080"
     volumes:
       - sftp-users:/var/lib/sftp-users:rw
+      - app-config:/etc/app:rw
     environment:
       PORT: "8080"
       SFTP_ADMIN_PASSWORD: "${SFTP_ADMIN_PASSWORD:-dev-admin-password}"
       SFTP_SEED_USER: "${SFTP_SEED_USER:-}"
       SFTP_SEED_PUBKEY: "${SFTP_SEED_PUBKEY:-}"
+      HASH_TARGET: "${HASH_TARGET:-file}"
+      HASH_ALGORITHM: "${HASH_ALGORITHM:-md5}"
+      PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${PORT:-18080}}"
+      WEB_GID: "${WEB_GID:-2001}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-dev-admin-token}"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -107,3 +116,4 @@ volumes:
   share-data:
   sftp-users:
   file-links:
+  app-config:

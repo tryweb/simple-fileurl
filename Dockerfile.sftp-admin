@@ -2,15 +2,23 @@
 
 FROM golang:1.24-alpine AS builder
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sftp-admin ./cmd/sftp-admin
 
 FROM alpine:3.23
+# WEB_GID is the web readers group shared with the file-sharing image: the
+# setgid bit makes rewritten config.json inherit it, so the non-root
+# file-sharing process keeps group-read access to the 0640 published file.
+ARG WEB_GID=2001
 RUN apk add --no-cache ca-certificates wget openssh-keygen \
+    && addgroup -S -g ${WEB_GID} webreaders \
     && mkdir -p /var/lib/sftp-users \
-    && chmod 0700 /var/lib/sftp-users
+    && chmod 0700 /var/lib/sftp-users \
+    && mkdir -p /etc/app \
+    && chown root:webreaders /etc/app \
+    && chmod 2770 /etc/app
 COPY --from=builder /out/sftp-admin /usr/local/bin/sftp-admin
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/sftp-admin"]
