@@ -80,6 +80,11 @@ func TestAdminLifecycleAtomic(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("dashboard = %d", code)
 	}
+	for _, want := range []string{`href="/"`, `href="/settings"`, ">Users<", ">Settings<", "Sign out"} {
+		if !strings.Contains(dash, want) {
+			t.Fatalf("dashboard nav missing %q", want)
+		}
+	}
 	csrf := csrfOf(dash)
 
 	// Create alice with a generated keypair.
