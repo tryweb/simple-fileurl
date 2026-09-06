@@ -89,8 +89,9 @@ services:
       dockerfile: Dockerfile.sftp-admin
     image: simple-fileurl-sftp-admin:dev
     container_name: simple-fileurl-sftp-admin-dev
+    # Remote-accessible by default; require TLS/private networking and a host firewall.
     ports:
-      - "127.0.0.1:${SFTP_ADMIN_PORT:-18081}:8080"
+      - "${SFTP_ADMIN_PORT:-18081}:8080"
     volumes:
       - sftp-users:/var/lib/sftp-users:rw
       - app-config:/etc/app:rw

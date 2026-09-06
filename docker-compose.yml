@@ -59,8 +59,9 @@ services:
 
   sftp-admin:
     image: ghcr.io/tryweb/simple-fileurl-sftp-admin:${IMAGE_TAG:?IMAGE_TAG is required}
+    # Remote-accessible by default; require TLS/private networking and a host firewall.
     ports:
-      - "127.0.0.1:${SFTP_ADMIN_PORT:-8081}:8080"
+      - "${SFTP_ADMIN_PORT:-8081}:8080"
     volumes:
       - "sftp-users:/var/lib/sftp-users:rw"
       - "app-config:/etc/app:rw"
