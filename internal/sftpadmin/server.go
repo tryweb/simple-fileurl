@@ -2,11 +2,15 @@ package sftpadmin
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"simple-fileurl/internal/config"
 )
@@ -59,9 +63,11 @@ func NewServer(cfg Config, st *Store) *Server {
 	s.mux.HandleFunc("POST /users/create", s.handleCreate)
 	s.mux.HandleFunc("POST /users/add-key", s.handleAddKey)
 	s.mux.HandleFunc("POST /users/delete-key", s.handleDeleteKey)
+	s.mux.HandleFunc("POST /users/key-note", s.handleKeyNote)
 	s.mux.HandleFunc("POST /users/remove-invalid-keys", s.handleRemoveInvalidKeys)
 	s.mux.HandleFunc("POST /users/generate-key", s.handleGenerateKey)
 	s.mux.HandleFunc("POST /users/status", s.handleStatus)
+	s.mux.HandleFunc("POST /users/delete", s.handleDelete)
 	s.mux.HandleFunc("GET /keys/download", s.handleDownload)
 	s.mux.HandleFunc("GET /settings", s.handleSettings)
 	s.mux.HandleFunc("POST /settings", s.handleSettingsSave)
@@ -112,10 +118,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := s.store.Load()
 	if err != nil {
-		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not load users", "cannot load users", http.StatusInternalServerError)
 		return
 	}
-	renderUsers(w, userDashboard(m, sess.csrf))
+	v := s.dashboardView(m, sess.csrf)
+	v.Notice = repairNotice(r)
+	renderUsers(w, v)
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
@@ -173,12 +181,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // generated ed25519 pair. Generated private keys are stashed in memory for
 // one download and never persisted.
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAuth(w, r); !ok {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	if err := ValidateUsername(username); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.dashboardWithError(w, sess.csrf, "Could not create user", err.Error(), http.StatusBadRequest)
 		return
 	}
 	pasted := strings.TrimSpace(r.FormValue("public_key"))
@@ -186,19 +195,19 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if pasted == "" {
 		kp, err := s.gen(username)
 		if err != nil {
-			http.Error(w, "key generation failed", http.StatusInternalServerError)
+			s.dashboardWithError(w, sess.csrf, "Could not create user", "key generation failed", http.StatusInternalServerError)
 			return
 		}
 		canon, _, err := ValidatePublicKey(kp.PublicKey)
 		if err != nil {
-			http.Error(w, "generated key failed validation", http.StatusInternalServerError)
+			s.dashboardWithError(w, sess.csrf, "Could not create user", "generated key failed validation", http.StatusInternalServerError)
 			return
 		}
 		pub, priv = canon, kp.PrivatePEM
 	} else {
 		canon, _, err := ValidatePublicKey(pasted)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			s.dashboardWithError(w, sess.csrf, "Could not create user", err.Error(), http.StatusBadRequest)
 			return
 		}
 		pub = canon
@@ -212,7 +221,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		m.Users = append(m.Users, User{Username: username, Enabled: true, AuthorizedKeys: []string{pub}})
 		return nil
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		s.dashboardWithError(w, sess.csrf, "Could not create user", err.Error(), http.StatusConflict)
 		return
 	}
 	if priv == "" {
@@ -221,14 +230,58 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := newToken()
 	if err != nil {
-		http.Error(w, "download token creation failed", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not create user", "download token creation failed", http.StatusInternalServerError)
 		return
 	}
 	s.mu.Lock()
 	s.pending[token] = pendingKey{username: username, private: priv, expires: time.Now().Add(pendingKeyTTL)}
 	s.mu.Unlock()
 	_, fp, _ := ValidatePublicKey(pub)
-	renderCreated(w, createdView{Username: username, Token: token, Fingerprint: fp})
+	s.dashboardWithGenerated(w, sess.csrf, username, token, fp)
+}
+
+// dashboardWithGenerated reloads the manifest and renders the users
+// dashboard with the shared one-time Generated result card. Both generate
+// paths (create-user with an empty key, existing-user row generation)
+// funnel here so the overlay markup is identical. Plain GET / leaves
+// Generated nil so no card renders; following the Close anchor back to /
+// clears it with zero JavaScript.
+func (s *Server) dashboardWithGenerated(w http.ResponseWriter, csrf, username, token, fp string) {
+	m, err := s.store.Load()
+	if err != nil {
+		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		return
+	}
+	v := s.dashboardView(m, csrf)
+	v.Generated = &generatedResult{Username: username, Token: token, Fingerprint: fp}
+	renderUsers(w, v)
+}
+
+func (s *Server) dashboardWithError(w http.ResponseWriter, csrf, title, message string, status int) {
+	m, err := s.store.Load()
+	if err != nil {
+		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		return
+	}
+	v := s.dashboardView(m, csrf)
+	v.ErrorTitle = title
+	v.Error = message
+	renderUsersStatus(w, v, status)
+}
+
+func (s *Server) dashboardView(m Manifest, csrf string) usersView {
+	v := userDashboard(m, csrf)
+	if notes, err := s.store.LoadNotes(); err == nil {
+		for i := range v.Users {
+			for j := range v.Users[i].Keys {
+				if v.Users[i].Keys[j].Valid {
+					v.Users[i].Keys[j].Note = notes[keyNoteID(v.Users[i].Username, v.Users[i].Keys[j].Fingerprint)]
+				}
+			}
+		}
+	}
+	v.Problems = invalidProblems(m)
+	return v
 }
 
 // errNoSuchUser and errNoSuchKey let mutation closures report lookups that
@@ -242,13 +295,17 @@ var (
 // users or keys are 404, strict-manifest conflicts needing dedicated repair
 // are 409, anything else (including persistence failures) is 500.
 func writeError(w http.ResponseWriter, err error) {
+	http.Error(w, err.Error(), statusForError(err))
+}
+
+func statusForError(err error) int {
 	switch {
 	case errors.Is(err, errNoSuchUser) || errors.Is(err, errNoSuchKey):
-		http.Error(w, err.Error(), http.StatusNotFound)
+		return http.StatusNotFound
 	case errors.Is(err, ErrManifestInvalid):
-		http.Error(w, err.Error(), http.StatusConflict)
+		return http.StatusConflict
 	default:
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return http.StatusInternalServerError
 	}
 }
 
@@ -300,38 +357,42 @@ func (s *Server) handleAddKey(w http.ResponseWriter, r *http.Request) {
 // leaving all other keys untouched. Removing the final usable key disables
 // the user with a valid empty key set so reconciliation revokes access.
 func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAuth(w, r); !ok {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	fp := strings.TrimSpace(r.FormValue("fingerprint"))
 	if err := ValidateUsername(username); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.dashboardWithError(w, sess.csrf, "Could not remove key", err.Error(), http.StatusBadRequest)
 		return
 	}
 	if !ValidFingerprint(fp) {
-		http.Error(w, "invalid fingerprint: want canonical SHA256 form", http.StatusBadRequest)
+		s.dashboardWithError(w, sess.csrf, "Could not remove key", "invalid fingerprint: want canonical SHA256 form", http.StatusBadRequest)
 		return
 	}
 	m, err := s.store.Load()
 	if err != nil {
-		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not remove key", "cannot load users", http.StatusInternalServerError)
 		return
 	}
 	switch userFound, keyFound := findKey(m, username, fp); {
 	case !userFound:
-		http.Error(w, errNoSuchUser.Error(), http.StatusNotFound)
+		s.dashboardWithError(w, sess.csrf, "Could not remove key", errNoSuchUser.Error(), http.StatusNotFound)
 		return
 	case !keyFound:
-		http.Error(w, errNoSuchKey.Error(), http.StatusNotFound)
+		s.dashboardWithError(w, sess.csrf, "Could not remove key", errNoSuchKey.Error(), http.StatusNotFound)
 		return
 	}
 	if err := s.store.Update(func(m *Manifest) error {
 		return deleteKey(m, username, fp)
 	}); err != nil {
-		writeError(w, err)
+		s.dashboardWithError(w, sess.csrf, "Could not remove key", err.Error(), statusForError(err))
 		return
 	}
+	// Best effort: a removed key must not leave an orphan sidecar note.
+	// A prune failure never fails the delete itself.
+	_ = s.store.DeleteNote(username, fp)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -383,35 +444,134 @@ func deleteKey(m *Manifest, username, fp string) error {
 	return errNoSuchUser
 }
 
-// handleRemoveInvalidKeys runs manifest-wide invalid-key repair: every
-// entry failing canonical validation is dropped, valid keys and unrelated
-// fields are preserved, and users left with zero valid keys are disabled.
-func (s *Server) handleRemoveInvalidKeys(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAuth(w, r); !ok {
+// handleKeyNote stores a display-only operator note for one valid key.
+// Notes live in a sidecar file, never affect validation or fingerprints,
+// and are never logged. An empty note clears the entry.
+func (s *Server) handleKeyNote(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
-	if _, err := s.store.RemoveInvalidKeys(); err != nil {
-		http.Error(w, "repair failed", http.StatusInternalServerError)
+	username := strings.TrimSpace(r.FormValue("username"))
+	fp := strings.TrimSpace(r.FormValue("fingerprint"))
+	note := strings.TrimSpace(r.FormValue("note"))
+	if err := ValidateUsername(username); err != nil {
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ValidFingerprint(fp) {
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", "invalid fingerprint: want canonical SHA256 form", http.StatusBadRequest)
+		return
+	}
+	if utf8.RuneCountInString(note) > MaxKeyNoteLength {
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", "note too long: max 120 characters", http.StatusBadRequest)
+		return
+	}
+	m, err := s.store.Load()
+	if err != nil {
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", "cannot load users", http.StatusInternalServerError)
+		return
+	}
+	switch userFound, keyFound := findKey(m, username, fp); {
+	case !userFound:
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", errNoSuchUser.Error(), http.StatusNotFound)
+		return
+	case !keyFound:
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", errNoSuchKey.Error(), http.StatusNotFound)
+		return
+	}
+	if err := s.store.SetNote(username, fp, note); err != nil {
+		s.dashboardWithError(w, sess.csrf, "Could not save key note", "cannot save note", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// repairNotice renders the post-repair result from strict query params:
+// repaired must be a non-negative integer, disabled a comma list of valid
+// usernames. Anything malformed is ignored and yields no notice; rendering
+// goes through html/template so values are escaped.
+func repairNotice(r *http.Request) string {
+	q := r.URL.Query()
+	raw, ok := q["repaired"]
+	if !ok || len(raw) == 0 || raw[0] == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(raw[0])
+	if err != nil || n < 0 {
+		return ""
+	}
+	if n == 0 {
+		return "No invalid entries found."
+	}
+	var disabled []string
+	for _, name := range strings.Split(q.Get("disabled"), ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if ValidateUsername(name) != nil {
+			continue
+		}
+		disabled = append(disabled, name)
+	}
+	word := "entries"
+	if n == 1 {
+		word = "entry"
+	}
+	if len(disabled) == 0 {
+		return fmt.Sprintf("Removed %d invalid %s; disabled: none.", n, word)
+	}
+	return fmt.Sprintf("Removed %d invalid %s; disabled: %s.", n, word, strings.Join(disabled, ", "))
+}
+
+// handleRemoveInvalidKeys runs manifest-wide invalid-key repair: every
+// entry failing canonical validation is dropped, valid keys and unrelated
+// fields are preserved, and users left with zero valid keys are disabled.
+func (s *Server) handleRemoveInvalidKeys(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	rep, err := s.store.RemoveInvalidKeys()
+	if err != nil {
+		s.dashboardWithError(w, sess.csrf, "Could not repair keys", "repair failed", http.StatusInternalServerError)
+		return
+	}
+	if m, err := s.store.Load(); err == nil {
+		keep := map[string]bool{}
+		for _, u := range m.Users {
+			for _, k := range u.AuthorizedKeys {
+				if fp, ferr := FingerprintOf(k); ferr == nil {
+					keep[keyNoteID(u.Username, fp)] = true
+				}
+			}
+		}
+		_ = s.store.PruneNotes(keep)
+	}
+	target := "/?repaired=" + strconv.Itoa(rep.RemovedKeys)
+	if len(rep.DisabledUsers) > 0 {
+		target += "&disabled=" + url.QueryEscape(strings.Join(rep.DisabledUsers, ","))
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 // handleGenerateKey appends a fresh Ed25519 public key for an existing user
-// and hands the private half out through the single-use download flow. The
-// user's enabled flag is never changed: disabled users stay disabled.
+// and renders the dashboard with a one-time download result card.
+// The user's enabled flag is never changed: disabled users stay disabled.
 func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAuth(w, r); !ok {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	if err := ValidateUsername(username); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", err.Error(), http.StatusBadRequest)
 		return
 	}
 	m, err := s.store.Load()
 	if err != nil {
-		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", "cannot load users", http.StatusInternalServerError)
 		return
 	}
 	known := false
@@ -421,17 +581,17 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !known {
-		http.Error(w, errNoSuchUser.Error(), http.StatusNotFound)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", errNoSuchUser.Error(), http.StatusNotFound)
 		return
 	}
 	kp, err := s.gen(username)
 	if err != nil {
-		http.Error(w, "key generation failed", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", "key generation failed", http.StatusInternalServerError)
 		return
 	}
 	canon, _, err := ValidatePublicKey(kp.PublicKey)
 	if err != nil {
-		http.Error(w, "generated key failed validation", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", "generated key failed validation", http.StatusInternalServerError)
 		return
 	}
 	if err := s.store.Update(func(m *Manifest) error {
@@ -444,26 +604,27 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
 		}
 		return errNoSuchUser
 	}); err != nil {
-		writeError(w, err)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", err.Error(), statusForError(err))
 		return
 	}
 	token, err := newToken()
 	if err != nil {
-		http.Error(w, "download token creation failed", http.StatusInternalServerError)
+		s.dashboardWithError(w, sess.csrf, "Could not generate key", "download token creation failed", http.StatusInternalServerError)
 		return
 	}
 	s.mu.Lock()
 	s.pending[token] = pendingKey{username: username, private: kp.PrivatePEM, expires: time.Now().Add(pendingKeyTTL)}
 	s.mu.Unlock()
 	fp, _ := FingerprintOf(canon)
-	renderCreated(w, createdView{Username: username, Token: token, Fingerprint: fp})
+	s.dashboardWithGenerated(w, sess.csrf, username, token, fp)
 }
 
 // handleStatus flips the enabled switch (action=disable|enable), which the
 // SFTP reconciler turns into key removal or restoration without restart.
 // Disabling retains manifest keys; enabling needs at least one usable key.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAuth(w, r); !ok {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
@@ -474,13 +635,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	case "enable":
 		enabled = true
 	default:
-		http.Error(w, "unknown action", http.StatusBadRequest)
+		s.dashboardWithError(w, sess.csrf, "Could not update user status", "unknown action", http.StatusBadRequest)
 		return
 	}
 	if enabled {
 		m, err := s.store.Load()
 		if err != nil {
-			http.Error(w, "cannot load users", http.StatusInternalServerError)
+			s.dashboardWithError(w, sess.csrf, "Could not update user status", "cannot load users", http.StatusInternalServerError)
 			return
 		}
 		known, usable := false, 0
@@ -490,11 +651,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !known {
-			http.Error(w, errNoSuchUser.Error(), http.StatusNotFound)
+			s.dashboardWithError(w, sess.csrf, "Could not update user status", errNoSuchUser.Error(), http.StatusNotFound)
 			return
 		}
 		if usable == 0 {
-			http.Error(w, "cannot enable a user with no usable keys", http.StatusConflict)
+			s.dashboardWithError(w, sess.csrf, "Could not update user status", "cannot enable a user with no usable keys", http.StatusConflict)
 			return
 		}
 	}
@@ -507,8 +668,85 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		return errNoSuchUser
 	}); err != nil {
-		writeError(w, err)
+		s.dashboardWithError(w, sess.csrf, "Could not update user status", err.Error(), statusForError(err))
 		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// errDeleteEnabled guards account deletion: only disabled users may be
+// deleted. The server enforces this even though the UI only renders the
+// Delete control on disabled rows — the UI is never trusted.
+var errDeleteEnabled = errors.New("disable the user before deletion")
+
+// handleDelete permanently removes a disabled user's whole manifest entry
+// (keys included) plus its sidecar notes. The entry removal is atomic via
+// Store.Update; notes are pruned afterwards with the existing PruneNotes
+// over the surviving key set, so the deleted user's notes fall out with any
+// other orphans. Absent users lose effective keys without any reconciler
+// change (the reconciler only installs keys for listed users). Like
+// disable, deletion leaves the per-user data directory on disk.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	if err := ValidateUsername(username); err != nil {
+		s.dashboardWithError(w, sess.csrf, "Could not delete user", err.Error(), http.StatusBadRequest)
+		return
+	}
+	m, err := s.store.Load()
+	if err != nil {
+		s.dashboardWithError(w, sess.csrf, "Could not delete user", "cannot load users", http.StatusInternalServerError)
+		return
+	}
+	found, enabled := false, false
+	for _, u := range m.Users {
+		if u.Username == username {
+			found, enabled = true, u.Enabled
+		}
+	}
+	if !found {
+		s.dashboardWithError(w, sess.csrf, "Could not delete user", errNoSuchUser.Error(), http.StatusNotFound)
+		return
+	}
+	if enabled {
+		s.dashboardWithError(w, sess.csrf, "Could not delete user", errDeleteEnabled.Error(), http.StatusConflict)
+		return
+	}
+	if err := s.store.Update(func(m *Manifest) error {
+		for i := range m.Users {
+			if m.Users[i].Username != username {
+				continue
+			}
+			if m.Users[i].Enabled {
+				return errDeleteEnabled
+			}
+			m.Users = append(m.Users[:i], m.Users[i+1:]...)
+			return nil
+		}
+		return errNoSuchUser
+	}); err != nil {
+		if errors.Is(err, errDeleteEnabled) {
+			s.dashboardWithError(w, sess.csrf, "Could not delete user", err.Error(), http.StatusConflict)
+			return
+		}
+		s.dashboardWithError(w, sess.csrf, "Could not delete user", err.Error(), statusForError(err))
+		return
+	}
+	// Best effort: the deleted user's notes must not linger as orphans.
+	// A prune failure never fails the delete itself.
+	if m, err := s.store.Load(); err == nil {
+		keep := map[string]bool{}
+		for _, u := range m.Users {
+			for _, k := range u.AuthorizedKeys {
+				if fp, ferr := FingerprintOf(k); ferr == nil {
+					keep[keyNoteID(u.Username, fp)] = true
+				}
+			}
+		}
+		_ = s.store.PruneNotes(keep)
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
