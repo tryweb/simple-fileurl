@@ -83,6 +83,135 @@ func (s *Store) Update(fn func(*Manifest) error) error {
 	return s.writeLocked(m)
 }
 
+// MaxKeyNoteLength bounds per-key operator notes. Notes are display-only
+// sidecar data: they never affect validation, reconciliation, or
+// fingerprints, and their contents are never logged.
+const MaxKeyNoteLength = 120
+
+// keyNoteID maps a note to its key. Fingerprints are canonical and unique
+// per key material, so username + "|" + fingerprint is a stable sidecar key.
+func keyNoteID(username, fp string) string {
+	return username + "|" + fp
+}
+
+// notesPath is the sidecar file next to the manifest.
+func (s *Store) notesPath() string {
+	return filepath.Join(filepath.Dir(s.path), "key-notes.json")
+}
+
+// LoadNotes reads the sidecar map. A missing file yields an empty map so
+// first boot works; a corrupt file is an error the dashboard treats as
+// empty rather than failing the page.
+func (s *Store) LoadNotes() (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadNotesLocked()
+}
+
+func (s *Store) loadNotesLocked() (map[string]string, error) {
+	data, err := os.ReadFile(s.notesPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	notes := map[string]string{}
+	if err := json.Unmarshal(data, &notes); err != nil {
+		return nil, fmt.Errorf("invalid key notes: %w", err)
+	}
+	return notes, nil
+}
+
+// SetNote stores (or, when note is empty, clears) the operator note for one
+// key. Callers must have resolved the user and fingerprint already.
+func (s *Store) SetNote(username, fp, note string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notes, err := s.loadNotesLocked()
+	if err != nil {
+		return err
+	}
+	if note == "" {
+		delete(notes, keyNoteID(username, fp))
+	} else {
+		notes[keyNoteID(username, fp)] = note
+	}
+	return s.writeNotesLocked(notes)
+}
+
+// DeleteNote drops the sidecar entry for a removed key. Missing entries are
+// a no-op that leaves the file untouched.
+func (s *Store) DeleteNote(username, fp string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notes, err := s.loadNotesLocked()
+	if err != nil {
+		return err
+	}
+	id := keyNoteID(username, fp)
+	if _, ok := notes[id]; !ok {
+		return nil
+	}
+	delete(notes, id)
+	return s.writeNotesLocked(notes)
+}
+
+// PruneNotes drops every sidecar entry not in keep (the set of live key
+// IDs). Repair and key removal call this so orphan notes never accumulate
+// while notes on surviving keys are preserved.
+func (s *Store) PruneNotes(keep map[string]bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notes, err := s.loadNotesLocked()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for id := range notes {
+		if !keep[id] {
+			delete(notes, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.writeNotesLocked(notes)
+}
+
+func (s *Store) writeNotesLocked(notes map[string]string) error {
+	data, err := json.MarshalIndent(notes, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".key-notes-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, s.notesPath())
+}
+
 // RepairReport summarizes one manifest-wide invalid-key repair.
 type RepairReport struct {
 	// RemovedKeys counts dropped invalid entries across all users.
