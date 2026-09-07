@@ -2,6 +2,7 @@ package sftpadmin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,6 +54,11 @@ func (s *Store) Load() (Manifest, error) {
 	return s.loadLocked()
 }
 
+// ErrManifestInvalid marks a strict final-manifest validation failure:
+// the mutation was refused and the file left untouched. Handlers map it
+// to 409 so operators know dedicated repair is required.
+var ErrManifestInvalid = errors.New("invalid manifest")
+
 // Update loads the manifest, applies fn, revalidates, and persists the
 // result atomically. fn's error aborts without touching the file. The final
 // document is strictly validated, so writes never introduce invalid keys
@@ -72,9 +78,63 @@ func (s *Store) Update(fn func(*Manifest) error) error {
 		m.Users = []User{}
 	}
 	if err := validateManifest(m, true); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrManifestInvalid, err)
 	}
 	return s.writeLocked(m)
+}
+
+// RepairReport summarizes one manifest-wide invalid-key repair.
+type RepairReport struct {
+	// RemovedKeys counts dropped invalid entries across all users.
+	RemovedKeys int
+	// DisabledUsers names users left with zero valid keys.
+	DisabledUsers []string
+}
+
+// RemoveInvalidKeys drops every authorized-key entry that fails canonical
+// validation, preserving all valid keys and unrelated user fields. Users
+// left with zero valid keys are disabled with a valid empty key set so no
+// stale authorization stays effective. The whole repair holds the store
+// mutex and persists atomically; with nothing invalid it is a no-op that
+// leaves the file untouched.
+func (s *Store) RemoveInvalidKeys() (RepairReport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := s.loadLocked()
+	if err != nil {
+		return RepairReport{}, err
+	}
+	var rep RepairReport
+	for i := range m.Users {
+		orig := m.Users[i].AuthorizedKeys
+		kept := make([]string, 0, len(orig))
+		for _, k := range orig {
+			if _, _, err := ValidatePublicKey(k); err != nil {
+				rep.RemovedKeys++
+				continue
+			}
+			kept = append(kept, k)
+		}
+		if len(kept) == len(orig) {
+			continue
+		}
+		m.Users[i].AuthorizedKeys = kept
+		if len(orig) > 0 && len(kept) == 0 {
+			m.Users[i].Enabled = false
+			rep.DisabledUsers = append(rep.DisabledUsers, m.Users[i].Username)
+		}
+	}
+	if rep.RemovedKeys == 0 {
+		return rep, nil
+	}
+	m.Version = ManifestVersion
+	if m.Users == nil {
+		m.Users = []User{}
+	}
+	if err := validateManifest(m, true); err != nil {
+		return RepairReport{}, fmt.Errorf("%w: %w", ErrManifestInvalid, err)
+	}
+	return rep, s.writeLocked(m)
 }
 
 func (s *Store) loadLocked() (Manifest, error) {

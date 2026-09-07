@@ -16,7 +16,11 @@ bad() { fail=$((fail + 1)); echo "FAIL: $1" >&2; }
 
 ED25519_A="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMkv2mXpacPKmfn2vejgseX5G5aVjpnuY6iI5y0lRP alice"
 ED25519_B="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDFb2x+g6+9h8rN6x2w8t4K6m8s2q0u4y6w8e0r2t6y8u4v bob"
-RSA_C="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7w6X5J9m3K2n8s4v6x7y9z0a1b2c3d4e5f6g7h8i9j0k alice2"
+# Shared validator-parity fixtures (tasks 1.1, 3.3): real ssh-keygen keys.
+# The same literals live in internal/sftpadmin/keylifecycle_test.go, where
+# the Admin validator must accept them with matching SHA256 fingerprints.
+REAL_RSA="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCEES+HFIuRQAkSK8MYMv/SpwmojyaETDeAfvXFdp46rY2MkSOXZBC1amcVXJD9sPYdda2055eD5U+J3tuTCCPnGwXjGm4AeSmv1D9gkah/35GOgxHcPtodaKtA5xRalhpR8GHyJ99QDar+gOaK6kg3AnmkgM85XGur27+Pq1UWH6D9cSauuda9iS+xy+njmPOUnSKYNWQel5jGzTrpaEPVwxSPFNWZFhht1xG4zWKxkxMrnPXcF8/DKkzUWhUncwdf3OUZ38WAvYKGPvPSmeSDlm1bC6kc8vatkE+39UED4hW5Z9J7DSg1XDh66Wgc7foGZzn+e6jMYgyTE5Y3RCPl fixture-rsa"
+REAL_ECDSA="ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBBJlS0JDnX4YX/ybI5cLciJ5MjTNV62EoRC8pwf9vAUKKhFpZCMgBfiubwWfTOid4gmvjMr0h546f1JrBQhHJTw= fixture-ec"
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -99,7 +103,7 @@ rm -f "$SFTP_USERS_FILE"
 ok "missing manifest is no-op"
 
 # --- 10. multiple keys joined with newlines, no private key leakage in logs ---
-write_manifest "{\"version\":1,\"users\":[{\"username\":\"carol\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\",\"$RSA_C\"]}]}"
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"carol\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\",\"$REAL_RSA\"]}]}"
 [ "$(run_reconcile)" = "0" ] || bad "multi-key manifest exits 0"
 lines="$(wc -l <"$SFTP_AUTH_KEYS_DIR/carol")"
 [ "$lines" = "2" ] || bad "carol has 2 key lines (got $lines)"
@@ -168,6 +172,57 @@ if [ "$(id -u)" = "0" ] && command -v su >/dev/null 2>&1 && command -v adduser >
 else
   ok "skip cross-user isolation test (needs root)"
 fi
+
+# --- 16. real RSA and ECDSA keys reconcile (validator parity with Admin) ---
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"rsauser\",\"enabled\":true,\"authorized_keys\":[\"$REAL_RSA\"]},{\"username\":\"ecuser\",\"enabled\":true,\"authorized_keys\":[\"$REAL_ECDSA\"]}]}"
+[ "$(run_reconcile)" = "0" ] || bad "real rsa/ecdsa manifest exits 0"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/rsauser")" = "$REAL_RSA" ] || bad "rsauser key content exact"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/ecuser")" = "$REAL_ECDSA" ] || bad "ecuser key content exact"
+ok "real RSA and ECDSA keys reconciled"
+
+# --- 17. one entry per valid key; removing one key leaves the other ---
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"multi\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\",\"$REAL_RSA\"]}]}"
+[ "$(run_reconcile)" = "0" ] || bad "two-key manifest exits 0"
+[ "$(wc -l <"$SFTP_AUTH_KEYS_DIR/multi")" = "2" ] || bad "multi has 2 key lines"
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"multi\",\"enabled\":true,\"authorized_keys\":[\"$REAL_RSA\"]}]}"
+[ "$(run_reconcile)" = "0" ] || bad "one-key manifest exits 0"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/multi")" = "$REAL_RSA" ] || bad "remaining key exact after removal"
+ok "per-key entries track manifest removals"
+
+# --- 18. valid empty authorization revokes stale access with exit 0 ---
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"revoked\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\"]}]}"
+run_reconcile >/dev/null
+[ -f "$SFTP_AUTH_KEYS_DIR/revoked" ] || bad "revoked key file seeded"
+write_manifest '{"version":1,"users":[{"username":"revoked","enabled":true,"authorized_keys":[]}]}'
+[ "$(run_reconcile)" = "0" ] || bad "valid empty manifest exits 0"
+[ ! -e "$SFTP_AUTH_KEYS_DIR/revoked" ] || bad "stale key survives valid empty authorization"
+[ "$(run_reconcile)" = "0" ] || bad "repeated valid empty exits 0"
+[ ! -e "$SFTP_AUTH_KEYS_DIR/revoked" ] || bad "repeated valid empty recreates key"
+ok "valid empty authorization revokes stale access"
+
+# --- 19. disabled user with a stale key file loses it with exit 0 ---
+printf '%s\n' "$ED25519_A" >"$SFTP_AUTH_KEYS_DIR/stale"
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"stale\",\"enabled\":false,\"authorized_keys\":[\"$ED25519_A\"]}]}"
+[ "$(run_reconcile)" = "0" ] || bad "disabled stale manifest exits 0"
+[ ! -e "$SFTP_AUTH_KEYS_DIR/stale" ] || bad "disabled stale key survives"
+ok "disabled user stale key removed"
+
+# --- 20. malformed input preserves the prior effective key, non-zero ---
+write_manifest "{\"version\":1,\"users\":[{\"username\":\"keep\",\"enabled\":true,\"authorized_keys\":[\"$ED25519_A\"]}]}"
+run_reconcile >/dev/null
+write_manifest '{"version":1,"users":[{"username":"keep","enabled":true}]}'
+[ "$(run_reconcile)" != "0" ] || bad "missing authorized_keys exits non-zero"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/keep")" = "$ED25519_A" ] || bad "missing field revoked prior key"
+write_manifest '{"version":1,"users":[{"username":"keep","enabled":true,"authorized_keys":"not-an-array"}]}'
+[ "$(run_reconcile)" != "0" ] || bad "wrong-type authorized_keys exits non-zero"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/keep")" = "$ED25519_A" ] || bad "wrong type revoked prior key"
+write_manifest '{"version":1,"users":[{"username":"keep","enabled":true,"authorized_keys":["not-a-key"]}]}'
+[ "$(run_reconcile)" != "0" ] || bad "invalid key entry exits non-zero"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/keep")" = "$ED25519_A" ] || bad "invalid entry revoked prior key"
+write_manifest '{"version":1,"users":[{"username":"keep","enabled":true,"authorized_keys":["ssh-ed25519 AAAA", 42]}]}'
+[ "$(run_reconcile)" != "0" ] || bad "non-string entry exits non-zero"
+[ "$(cat "$SFTP_AUTH_KEYS_DIR/keep")" = "$ED25519_A" ] || bad "non-string entry revoked prior key"
+ok "malformed input preserves fail-safe state"
 
 if [ "$fail" -gt 0 ]; then echo "RECONCILE FAIL: $fail failures" >&2; exit 1; fi
 echo "RECONCILE OK ($pass checks)"

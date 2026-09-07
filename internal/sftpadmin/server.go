@@ -58,6 +58,9 @@ func NewServer(cfg Config, st *Store) *Server {
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
 	s.mux.HandleFunc("POST /users/create", s.handleCreate)
 	s.mux.HandleFunc("POST /users/add-key", s.handleAddKey)
+	s.mux.HandleFunc("POST /users/delete-key", s.handleDeleteKey)
+	s.mux.HandleFunc("POST /users/remove-invalid-keys", s.handleRemoveInvalidKeys)
+	s.mux.HandleFunc("POST /users/generate-key", s.handleGenerateKey)
 	s.mux.HandleFunc("POST /users/status", s.handleStatus)
 	s.mux.HandleFunc("GET /keys/download", s.handleDownload)
 	s.mux.HandleFunc("GET /settings", s.handleSettings)
@@ -228,6 +231,38 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	renderCreated(w, createdView{Username: username, Token: token, Fingerprint: fp})
 }
 
+// errNoSuchUser and errNoSuchKey let mutation closures report lookups that
+// pre-checks already resolved; handlers map them to 404 even on races.
+var (
+	errNoSuchUser = errors.New("user not found")
+	errNoSuchKey  = errors.New("key not found")
+)
+
+// writeError maps a Store.Update failure to its response contract: unknown
+// users or keys are 404, strict-manifest conflicts needing dedicated repair
+// are 409, anything else (including persistence failures) is 500.
+func writeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errNoSuchUser) || errors.Is(err, errNoSuchKey):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, ErrManifestInvalid):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// usableKeys counts entries that pass canonical validation.
+func usableKeys(keys []string) int {
+	n := 0
+	for _, k := range keys {
+		if _, _, err := ValidatePublicKey(k); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
 // handleAddKey appends an external public key idempotently: re-submitting
 // the same key is a no-op success, existing keys are never replaced.
 func (s *Server) handleAddKey(w http.ResponseWriter, r *http.Request) {
@@ -253,16 +288,180 @@ func (s *Server) handleAddKey(w http.ResponseWriter, r *http.Request) {
 			m.Users[i].AuthorizedKeys = append(m.Users[i].AuthorizedKeys, canon)
 			return nil
 		}
-		return errors.New("user not found")
+		return errNoSuchUser
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// handleDeleteKey removes one valid key identified by canonical fingerprint,
+// leaving all other keys untouched. Removing the final usable key disables
+// the user with a valid empty key set so reconciliation revokes access.
+func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	fp := strings.TrimSpace(r.FormValue("fingerprint"))
+	if err := ValidateUsername(username); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ValidFingerprint(fp) {
+		http.Error(w, "invalid fingerprint: want canonical SHA256 form", http.StatusBadRequest)
+		return
+	}
+	m, err := s.store.Load()
+	if err != nil {
+		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		return
+	}
+	switch userFound, keyFound := findKey(m, username, fp); {
+	case !userFound:
+		http.Error(w, errNoSuchUser.Error(), http.StatusNotFound)
+		return
+	case !keyFound:
+		http.Error(w, errNoSuchKey.Error(), http.StatusNotFound)
+		return
+	}
+	if err := s.store.Update(func(m *Manifest) error {
+		return deleteKey(m, username, fp)
+	}); err != nil {
+		writeError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// findKey reports whether the manifest holds the user and whether one of
+// the user's valid keys carries fp. Invalid entries have no fingerprint
+// and can never match.
+func findKey(m Manifest, username, fp string) (userFound, keyFound bool) {
+	for _, u := range m.Users {
+		if u.Username != username {
+			continue
+		}
+		userFound = true
+		for _, k := range u.AuthorizedKeys {
+			if kfp, err := FingerprintOf(k); err == nil && kfp == fp {
+				keyFound = true
+			}
+		}
+	}
+	return userFound, keyFound
+}
+
+// deleteKey applies fingerprint-scoped removal inside a store mutation:
+// only the matching valid key is dropped, order is preserved, and a user
+// left with no usable keys is disabled with a valid empty key set.
+func deleteKey(m *Manifest, username, fp string) error {
+	for i := range m.Users {
+		if m.Users[i].Username != username {
+			continue
+		}
+		kept := make([]string, 0, len(m.Users[i].AuthorizedKeys))
+		matched := false
+		for _, k := range m.Users[i].AuthorizedKeys {
+			if kfp, err := FingerprintOf(k); err == nil && kfp == fp && !matched {
+				matched = true
+				continue
+			}
+			kept = append(kept, k)
+		}
+		if !matched {
+			return errNoSuchKey
+		}
+		m.Users[i].AuthorizedKeys = kept
+		if m.Users[i].Enabled && usableKeys(kept) == 0 {
+			m.Users[i].Enabled = false
+			m.Users[i].AuthorizedKeys = []string{}
+		}
+		return nil
+	}
+	return errNoSuchUser
+}
+
+// handleRemoveInvalidKeys runs manifest-wide invalid-key repair: every
+// entry failing canonical validation is dropped, valid keys and unrelated
+// fields are preserved, and users left with zero valid keys are disabled.
+func (s *Server) handleRemoveInvalidKeys(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	if _, err := s.store.RemoveInvalidKeys(); err != nil {
+		http.Error(w, "repair failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleGenerateKey appends a fresh Ed25519 public key for an existing user
+// and hands the private half out through the single-use download flow. The
+// user's enabled flag is never changed: disabled users stay disabled.
+func (s *Server) handleGenerateKey(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	if err := ValidateUsername(username); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	m, err := s.store.Load()
+	if err != nil {
+		http.Error(w, "cannot load users", http.StatusInternalServerError)
+		return
+	}
+	known := false
+	for _, u := range m.Users {
+		if u.Username == username {
+			known = true
+		}
+	}
+	if !known {
+		http.Error(w, errNoSuchUser.Error(), http.StatusNotFound)
+		return
+	}
+	kp, err := s.gen(username)
+	if err != nil {
+		http.Error(w, "key generation failed", http.StatusInternalServerError)
+		return
+	}
+	canon, _, err := ValidatePublicKey(kp.PublicKey)
+	if err != nil {
+		http.Error(w, "generated key failed validation", http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.Update(func(m *Manifest) error {
+		for i := range m.Users {
+			if m.Users[i].Username != username {
+				continue
+			}
+			m.Users[i].AuthorizedKeys = append(m.Users[i].AuthorizedKeys, canon)
+			return nil
+		}
+		return errNoSuchUser
+	}); err != nil {
+		writeError(w, err)
+		return
+	}
+	token, err := newToken()
+	if err != nil {
+		http.Error(w, "download token creation failed", http.StatusInternalServerError)
+		return
+	}
+	s.mu.Lock()
+	s.pending[token] = pendingKey{username: username, private: kp.PrivatePEM, expires: time.Now().Add(pendingKeyTTL)}
+	s.mu.Unlock()
+	fp, _ := FingerprintOf(canon)
+	renderCreated(w, createdView{Username: username, Token: token, Fingerprint: fp})
+}
+
 // handleStatus flips the enabled switch (action=disable|enable), which the
 // SFTP reconciler turns into key removal or restoration without restart.
+// Disabling retains manifest keys; enabling needs at least one usable key.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAuth(w, r); !ok {
 		return
@@ -278,6 +477,27 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
 	}
+	if enabled {
+		m, err := s.store.Load()
+		if err != nil {
+			http.Error(w, "cannot load users", http.StatusInternalServerError)
+			return
+		}
+		known, usable := false, 0
+		for _, u := range m.Users {
+			if u.Username == username {
+				known, usable = true, usableKeys(u.AuthorizedKeys)
+			}
+		}
+		if !known {
+			http.Error(w, errNoSuchUser.Error(), http.StatusNotFound)
+			return
+		}
+		if usable == 0 {
+			http.Error(w, "cannot enable a user with no usable keys", http.StatusConflict)
+			return
+		}
+	}
 	if err := s.store.Update(func(m *Manifest) error {
 		for i := range m.Users {
 			if m.Users[i].Username == username {
@@ -285,9 +505,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 		}
-		return errors.New("user not found")
+		return errNoSuchUser
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -422,6 +642,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+pk.username+`_ed25519"`)
 	_, _ = w.Write([]byte(pk.private))
 }

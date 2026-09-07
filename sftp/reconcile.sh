@@ -10,7 +10,10 @@
 # Guarantees:
 # - Invalid manifests change nothing (previous valid key state is kept).
 # - Per-user failures leave that user's existing key file untouched.
-# - Disabled users and users absent from the manifest have no key file.
+# - Disabled users, users absent from the manifest, and enabled users with
+#   a valid empty authorized_keys list have no key file: an explicit []
+#   revokes stale access with exit 0, while a missing field, a wrong type,
+#   or an invalid entry preserves the previous key file with non-zero exit.
 # - Key files are written atomically (tmp + rename), root-owned, 0640
 #   (root:sftpusers; the most restrictive mode the daemon can read:
 #   OpenSSH opens AuthorizedKeysFile as the target user, so root-only
@@ -181,19 +184,43 @@ while [ "$i" -lt "$count" ]; do
     continue
   fi
 
-  # Keep an existing effective key when this user's new entry is invalid or
-  # provisioning fails; a bad manifest must not revoke a previously valid user.
-  keep_list="$keep_list $user"
-
-  keys="$(jq -r --argjson i "$i" \
-    '.users[$i].authorized_keys // [] | map(select(type == "string")) | .[]' \
-    "$USERS_FILE" 2>/dev/null)"
-  if [ -z "$keys" ]; then
-    log "enabled user=$user has no keys; keeping previous state for user"
+  # A missing authorized_keys field or a non-array value is malformed
+  # input: preserve the previous effective key, never broaden or revoke.
+  if ! jq -e --argjson i "$i" '.users[$i] | has("authorized_keys") and (.authorized_keys | type == "array")' \
+      "$USERS_FILE" >/dev/null 2>&1; then
+    log "enabled user=$user has malformed authorized_keys; keeping previous state for user"
+    keep_list="$keep_list $user"
     failures=$((failures + 1))
     i=$((i + 1))
     continue
   fi
+
+  # Non-string entries are malformed input: preserve, do not coerce.
+  if [ "$(jq -r --argjson i "$i" '[.users[$i].authorized_keys[] | select(type != "string")] | length' \
+      "$USERS_FILE" 2>/dev/null)" != "0" ]; then
+    log "enabled user=$user has invalid key material; keeping previous state for user"
+    keep_list="$keep_list $user"
+    failures=$((failures + 1))
+    i=$((i + 1))
+    continue
+  fi
+
+  # A valid empty authorization set is intentional revocation: remove any
+  # stale effective key and succeed, so deleted final keys lose access.
+  if [ "$(jq -r --argjson i "$i" '.users[$i].authorized_keys | length' \
+      "$USERS_FILE" 2>/dev/null)" = "0" ]; then
+    drop_keys "$user"
+    log "enabled user=$user has empty authorization; revoked effective key"
+    i=$((i + 1))
+    continue
+  fi
+
+  # From here the user keeps an effective key unless provisioning fails: a
+  # bad key or a failed write must not revoke a previously valid user.
+  keep_list="$keep_list $user"
+
+  keys="$(jq -r --argjson i "$i" '.users[$i].authorized_keys[]' \
+    "$USERS_FILE" 2>/dev/null)"
   bad_key=0
   while IFS= read -r k; do
     if ! valid_key "$k"; then bad_key=1; break; fi

@@ -78,6 +78,29 @@ func ValidatePublicKey(key string) (canonical string, fingerprint string, err er
 	return typ + " " + b64, "SHA256:" + fingerprintSHA256(blob), nil
 }
 
+// FingerprintOf returns the canonical OpenSSH-style SHA256 fingerprint for
+// valid single-line public-key text. Comments and surrounding whitespace do
+// not affect the result; invalid input fails closed with an error and no
+// fingerprint, so invalid entries can never be addressed by fingerprint.
+func FingerprintOf(key string) (string, error) {
+	_, fp, err := ValidatePublicKey(key)
+	if err != nil {
+		return "", err
+	}
+	return fp, nil
+}
+
+// fingerprintPattern matches canonical "SHA256:" fingerprints: the prefix
+// plus the 43 unpadded standard-Base64 characters of a 32-byte digest.
+var fingerprintPattern = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
+
+// ValidFingerprint reports whether fp has canonical fingerprint shape.
+// It performs no lookup; handlers use it to reject malformed input with
+// 400 before touching the manifest.
+func ValidFingerprint(fp string) bool {
+	return fingerprintPattern.MatchString(fp)
+}
+
 // checkKeyBlob verifies the decoded wire blob actually encodes a key of the
 // declared type instead of arbitrary base64 with a valid-looking prefix.
 func checkKeyBlob(typ string, blob []byte) error {
