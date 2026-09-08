@@ -5,9 +5,8 @@
 # tag to a version AFTER it has been validated (staging/dogfood soak).
 # Users tracking :latest therefore always receive a soaked release.
 #
-# Adapted from ai-engkit's promote.yml. This repo's CI creates no GitHub
-# Releases, so there are no release-marking steps here — promotion is purely
-# the image retag below.
+# Adapted from ai-engkit's promote.yml. GitHub Releases are created by CI;
+# promotion remains separate and only retags the published images below.
 #
 name: Promote stable
 
@@ -47,18 +46,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Re-tag the EXISTING published image — same digest, never rebuilt.
-      - name: Promote image tag to latest
+      # Re-tag the EXISTING published images — same digests, never rebuilt.
+      - name: Promote images to latest
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
-          docker pull "${IMAGE}:${{ inputs.version }}"
-          docker tag "${IMAGE}:${{ inputs.version }}" "${IMAGE}:latest"
-          docker push "${IMAGE}:latest"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:latest" | cut -f2 -d'@')
-          echo "::notice::Promoted ${{ inputs.version }} to latest (digest sha256:${DIGEST})"
+          BASE_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          for suffix in '' '-sftp' '-sftp-admin'; do
+            IMAGE="${BASE_IMAGE}${suffix}"
+            docker pull "${IMAGE}:${{ inputs.version }}"
+            docker tag "${IMAGE}:${{ inputs.version }}" "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+            DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:latest" | cut -f2 -d'@')
+            echo "::notice::Promoted ${IMAGE}:${{ inputs.version }} to latest (digest sha256:${DIGEST})"
+          done
 
       - name: Summary
         run: |
           echo "### Promoted \`${{ inputs.version }}\` to \`latest\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Digest moved as-is (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \\`simple-fileurl\\` digest moved as-is (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \\`simple-fileurl-sftp\\` digest moved as-is (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \\`simple-fileurl-sftp-admin\\` digest moved as-is (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
