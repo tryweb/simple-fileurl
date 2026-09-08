@@ -61,6 +61,16 @@ func (s *Server) effectiveConfig() config.Config {
 	return cfg
 }
 
+// reloadLinks refreshes the links store from disk so links created or
+// changed by the sftp-admin container become visible without a restart. A
+// missing or unreadable file leaves the in-memory store unchanged,
+// mirroring effectiveConfig's fallback.
+func (s *Server) reloadLinks() {
+	if err := s.links.Load(); err != nil {
+		return
+	}
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if err := s.store.Check(); err != nil {
 		http.Error(w, "unhealthy", http.StatusServiceUnavailable)

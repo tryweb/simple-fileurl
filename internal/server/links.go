@@ -98,6 +98,7 @@ func checkLinkPassword(password string) error {
 }
 
 func (s *Server) handleLinksCreate(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	if !s.requireBearer(w, r) {
 		return
 	}
@@ -165,6 +166,7 @@ func (s *Server) handleLinksCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLinksList(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	if !s.requireBearer(w, r) {
 		return
 	}
@@ -177,6 +179,7 @@ func (s *Server) handleLinksList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLinkGet(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	if !s.requireBearer(w, r) {
 		return
 	}
@@ -195,6 +198,7 @@ type patchLinkRequest struct {
 }
 
 func (s *Server) handleLinkPatch(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	if !s.requireBearer(w, r) {
 		return
 	}
@@ -254,6 +258,7 @@ func (s *Server) handleLinkPatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLinkDelete(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	if !s.requireBearer(w, r) {
 		return
 	}
@@ -336,10 +341,16 @@ func verifyLinkSession(cookie, id, key string) bool {
 }
 
 // linkSessionOK reports whether the request may view the link: open links
-// always pass, protected links need a valid session cookie.
+// always pass, protected links need a valid session cookie or a password
+// passed as a query parameter (e.g. /l/{id}?password=secret).
 func linkSessionOK(cfg config.Config, r *http.Request, l links.Link) bool {
 	if !l.HasPassword() {
 		return true
+	}
+	if p := r.URL.Query().Get("password"); p != "" {
+		if links.CheckPassword(l.PasswordHash, p) {
+			return true
+		}
 	}
 	c, err := r.Cookie(linkSessionCookieName(l.ID))
 	if err != nil {
@@ -388,6 +399,7 @@ type linkPageData struct {
 }
 
 func (s *Server) handleLinkPage(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	l, ok := s.links.Get(r.PathValue("id"))
 	if !ok || l.Expired(time.Now()) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -420,6 +432,7 @@ func (s *Server) handleLinkPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLinkAuth(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	l, ok := s.links.Get(r.PathValue("id"))
 	if !ok || l.Expired(time.Now()) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -462,6 +475,7 @@ type linkFilesResponse struct {
 }
 
 func (s *Server) handleLinkFiles(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
 	l, ok := s.links.Get(r.PathValue("id"))
 	if !ok || l.Expired(time.Now()) {
 		http.Error(w, "not found", http.StatusNotFound)

@@ -312,6 +312,44 @@ func TestEffectiveConfigOverlay(t *testing.T) {
 	}
 }
 
+func TestLinkPasswordQueryParam(t *testing.T) {
+	srv := testScopeServer(t)
+	hash, err := links.HashPassword("pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCreateLink(t, srv, links.Link{ID: "user1", Scope: links.Scope{Type: links.ScopeUser, User: "jonathan"}, PasswordHash: hash, CreatedAt: time.Now()})
+
+	// No password still shows the form.
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/l/user1", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no password: %d", rec.Code)
+	}
+
+	// Wrong password in the query is rejected.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/l/user1?password=nope", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong query password: %d", rec.Code)
+	}
+
+	// Correct password in the query grants access without a cookie.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/l/user1?password=pw", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("query password: %d", rec.Code)
+	}
+	for _, want := range []string{"files/shared/team.txt", "jonathan/docs/notes.txt"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("query password page missing %q", want)
+		}
+	}
+	if strings.Contains(rec.Body.String(), "alice/docs/secret.txt") {
+		t.Fatal("cross-user leakage with query password")
+	}
+}
+
 func TestLinkPageScopeIsolation(t *testing.T) {
 	srv := testScopeServer(t)
 	mustCreateLink(t, srv, links.Link{ID: "admin1", Scope: links.Scope{Type: links.ScopeAdmin}, CreatedAt: time.Now()})
