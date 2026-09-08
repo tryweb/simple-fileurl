@@ -81,49 +81,56 @@ above rather than repeating raw color values.
 - Buttons: `padding:8px 16px`; inline row forms `.inline-form{display:inline;margin-right:8px}`.
 - Block actions sit on their own row: `.form-actions{margin-top:12px}` wraps the
   Create button below the paste-or-generate textarea, left-aligned.
+- Overflow and wrapping contract: every value the operator must read must be
+  visible without hovering. Never rely on `text-overflow: ellipsis` for primary
+  data. Fixed-layout tables keep a readable minimum width and scroll inside
+  `.table-wrap{overflow-x:auto}` when the viewport is too narrow; the page
+  itself never scrolls sideways. Long identifiers (fingerprints, hashes, IDs)
+  may break only inside their own cell; compact metadata values stay on one
+  line by default and only wrap when the viewport forces the table to scroll.
 - Tables: `th,td{padding:8px 10px}`, full width, `border-collapse:collapse`,
   bottom borders only. The users table (`.users-table`,
   `table-layout:fixed`) pins scan-first column proportions via classed
   `<colgroup>` — Username 24%, Status 18%, Keys 22%, Manage 36% — and the
   header row keeps those four `<th scope="col">` columns. Each user body row
-  is a single `<td colspan="4" class="user-cell">` (`.user-cell{padding:0}`)
-  containing one native `<details class="user-details">`; the `<summary
-  class="user-summary">` is a CSS grid mirroring the header proportions
-  (`grid-template-columns:24% 18% 22% 36%`) so the collapsed scan line aligns
+  is a single `<td colspan="4" class="user-cell">` containing one native
+  `<details class="user-details">`; the `<summary class="user-summary">` is a
+  CSS grid mirroring the header proportions so the collapsed scan line aligns
   with the header, while the disclosed `.user-maintenance` block below it
-  spans the full table content width. Its valid-key list uses an adaptive
-  `repeat(auto-fit,minmax(280px,1fr))` grid and row-level actions use a
-  wrapping `.user-actions` bar, so expanded content uses available width
-  instead of stacking everything in one narrow column. Later rows flow below
-  the open block;
-  no sibling-row spanning and no JavaScript is involved.
-  No inline `style` widths: every proportion lives in CSS classes
-  (`.col-username/.col-status/.col-keys/.col-manage` + `.user-summary`).
-  Percentage widths (not pixels) scale down intact, which is what keeps the
-  375px path safe.
- - Card order on the Users page is Existing users (`#existing-users`) first,
+  spans the full table content width. Its valid-key list uses an adaptive grid
+  and row-level actions use a wrapping `.user-actions` bar, so expanded content
+  uses available width instead of stacking everything in one narrow column.
+  No inline `style` widths: every proportion lives in CSS classes. Percentage
+  widths scale down intact, which is what keeps the 375px path safe.
+- Card order on the Users page is Existing users (`#existing-users`) first,
   then Create user (`#create-user`), then Key repair (`#key-repair`); stable
   `id` hooks exist for all three cards and `class="users-table"` for the
-   table.
-- The Share Links page uses `#existing-links` before `#create-link`. Its
-  `.links-table` uses fixed percentage columns and compact `.link-meta`
-  metadata for Scope, Password, Created, and Expires; long URLs wrap only in
-  the URL column, while metadata values stay together on one line where the
-  viewport permits.
+  table.
+- The Share Links page uses `#existing-links` before `#create-link` and
+  satisfies these layout constraints:
+  - The ID column displays the full link ID on a single line at desktop width.
+  - Scope, Password, Created, and Expires use compact icon+value metadata with
+    visible text plus `title`/`aria-label` tips; values stay on one line where
+    the viewport permits and never truncate with ellipsis.
+  - Long URLs wrap only inside the URL column.
+  - Optional descriptions appear below the URL, not inside the Actions column.
+  - The table has a readable minimum width; on narrow viewports it scrolls
+    horizontally inside `.table-wrap`, while the page itself never scrolls
+    sideways and the Create link form remains a single usable column.
 - The Create link `datetime-local` field represents the admin browser's local
   time. A hidden browser offset is submitted with the form, the server stores
   the resulting instant in UTC, and Created/Expires display an explicit `UTC`
   suffix plus accessible icon tips. Public `/l/<id>`, password, and files
   routes enforce expiry at request time; direct hash download URLs remain
   permanent bearer URLs by design.
-- Responsive: single column below ~600px. Tables scroll horizontally if needed
-  (wrap the users table in `.table-wrap{overflow-x:auto}` — the ONLY element
-  allowed to scroll); at 375px every maintenance control inside
-  `.user-maintenance` stacks full-width and no horizontal page overflow is
-  allowed. Below 600px the table header is visually compacted, the summary
-  grid reflows to two columns, and the key tile grid becomes one column, so
-  Status, Keys, Manage, notes, and buttons remain directly usable without
-  horizontal scrolling.
+- Responsive: single column below ~600px. Tables scroll horizontally inside
+  `.table-wrap{overflow-x:auto}` when their minimum width exceeds the viewport;
+  this is the ONLY element allowed to introduce horizontal scrolling. At 375px
+  every maintenance control inside `.user-maintenance` stacks full-width and no
+  horizontal page overflow is allowed. Below 600px the table header is visually
+  compacted, the summary grid reflows to two columns, and the key tile grid
+  becomes one column, so Status, Keys, Manage, notes, and buttons remain
+  directly usable.
 
 ## 5. Reusable primitives and states
 
