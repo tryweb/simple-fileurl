@@ -520,8 +520,29 @@ func TestLinksPageCompactMetadataContract(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`class="links-table"`,
-		`table-layout:fixed`,
-		`class="link-meta"`,
+		`.links-table{table-layout:fixed}`,
+		`.link-meta-value{min-width:0;white-space:normal;overflow-wrap:anywhere;overflow:visible;text-overflow:clip}`,
+		`<th scope="col">ID</th><th scope="col">URL</th><th scope="col">Access</th><th scope="col">Validity</th><th scope="col">Actions</th>`,
+		`class="col-id"`,
+		`class="col-url"`,
+		`class="col-access"`,
+		`class="col-validity"`,
+		`class="col-actions"`,
+		`class="link-stack"`,
+		`class="link-access" data-label="Access"`,
+		`class="link-validity" data-label="Validity"`,
+		`class="link-actions" data-label="Actions"`,
+		`@media (max-width:1024px)`,
+		`.links-table colgroup{display:none}`,
+		`.links-table tbody,.links-table td{display:block}`,
+		`.links-table tbody tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr)}`,
+		`.links-table .link-id,.links-table .link-url,.links-table .link-actions{grid-column:1 / -1}`,
+		`@media (max-width:600px)`,
+		`.links-table tbody tr{grid-template-columns:1fr}`,
+		`Scope:`,
+		`Password:`,
+		`Created:`,
+		`Expires:`,
 		`aria-label="Scope: user, alice, sees`,
 		`aria-label="Password: protected"`,
 		`aria-label="Created:`,
@@ -530,6 +551,17 @@ func TestLinksPageCompactMetadataContract(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("links page must render %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		`.links-table{table-layout:fixed;min-width:1120px}`,
+		`<th scope="col">Scope</th>`,
+		`<th scope="col">Password</th>`,
+		`<th scope="col">Created</th>`,
+		`<th scope="col">Expires</th>`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("links page must not render standalone header %q", unwanted)
 		}
 	}
 }

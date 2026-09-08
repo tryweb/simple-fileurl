@@ -79,20 +79,37 @@ a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,
 .key-note{font-size:.85rem}
 .note-form{margin-top:4px}
 .problems{margin:8px 0}
-.links-table{table-layout:fixed;min-width:1120px}
+ .links-table{table-layout:fixed}
 .links-table .col-id{width:15%}
-.links-table .col-url{width:18%}
-.links-table .col-scope{width:12%}
-.links-table .col-password{width:10%}
-.links-table .col-created{width:18%}
-.links-table .col-expires{width:18%}
-.links-table .col-actions{width:9%}
-.links-table td:first-child code{white-space:nowrap;word-break:normal}
+.links-table .col-url{width:32%}
+.links-table .col-access{width:14%}
+.links-table .col-validity{width:29%}
+.links-table .col-actions{width:10%}
+.links-table .link-id{white-space:nowrap}
+.links-table .link-id code{white-space:nowrap;word-break:normal}
 .links-table a{overflow-wrap:anywhere;word-break:break-word}
+.link-stack{display:grid;gap:4px}
 .link-meta{display:inline-flex;align-items:center;gap:5px;max-width:100%;white-space:nowrap}
 .link-meta svg{flex:none}
-.link-meta-value{overflow:visible;text-overflow:clip}
-.link-description{display:block;margin-top:4px}
+.link-meta-label{color:var(--muted)}
+ .link-meta-value{min-width:0;white-space:normal;overflow-wrap:anywhere;overflow:visible;text-overflow:clip}
+.link-description{display:block;margin-top:4px;overflow-wrap:anywhere;word-break:break-word}
+ @media (max-width:1024px){
+ .links-table{min-width:0;table-layout:auto}
+ .links-table colgroup{display:none}
+ .links-table thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+ .links-table tbody,.links-table td{display:block}
+ .links-table tbody tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr)}
+ .links-table .link-id,.links-table .link-url,.links-table .link-actions{grid-column:1 / -1}
+ .links-table tbody tr{margin:12px 0;border:1px solid var(--line);border-radius:4px;background:var(--card)}
+ .links-table tbody tr:nth-child(even){background:var(--card)}
+ .links-table td{padding:8px 10px;border-bottom:0}
+ .links-table td::before{content:attr(data-label);display:block;margin-bottom:4px;color:var(--muted);font-size:.85rem;font-weight:600}
+ .links-table .link-actions{border-top:1px solid var(--line)}
+}
+@media (max-width:600px){
+ .links-table tbody tr{grid-template-columns:1fr}
+}
 .overlay{position:fixed;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:clamp(24px,var(--overlay-top),96px) 16px 48px;z-index:50}
 .overlay-card{position:static;width:100%;max-width:560px;margin:0}
 </style>
@@ -369,17 +386,21 @@ var linksTemplate = template.Must(template.Must(baseTemplate.Clone()).Parse(`{{d
 {{if .Links}}
 <div class="table-wrap">
 <table class="links-table">
-<colgroup><col class="col-id"><col class="col-url"><col class="col-scope"><col class="col-password"><col class="col-created"><col class="col-expires"><col class="col-actions"></colgroup>
-<thead><tr><th scope="col">ID</th><th scope="col">URL</th><th scope="col">Scope</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Actions</th></tr></thead>
+<colgroup><col class="col-id"><col class="col-url"><col class="col-access"><col class="col-validity"><col class="col-actions"></colgroup>
+<thead><tr><th scope="col">ID</th><th scope="col">URL</th><th scope="col">Access</th><th scope="col">Validity</th><th scope="col">Actions</th></tr></thead>
 <tbody>
 {{range .Links}}<tr>
-<td><code>{{.ID}}</code></td>
-<td>{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{else}}<span class="hint">no public URL</span>{{end}}{{if .Description}}<span class="link-description hint">{{.Description}}</span>{{end}}</td>
-<td>{{if eq .Scope.Type "admin"}}<span class="link-meta" title="Scope: admin, sees all files" aria-label="Scope: admin, sees all files"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 13V3h12v10H2Zm2-2h8M4 5h8M6 7h4" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="link-meta-value">admin</span></span>{{else}}<span class="link-meta" title="Scope: user, {{.Scope.User}}, sees files/ + user directory" aria-label="Scope: user, {{.Scope.User}}, sees files/ + user directory"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6ZM2.5 14a5.5 5.5 0 0 1 11 0M1.5 5h3M3 3.5v3" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">user: {{.Scope.User}}</span></span>{{end}}</td>
-<td>{{if .HasPassword}}<span class="link-meta" title="Password: protected" aria-label="Password: protected"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1" fill="none" stroke="var(--ok)" stroke-width="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">protected</span></span>{{else}}<span class="link-meta" title="Password: open" aria-label="Password: open"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1" fill="none" stroke="var(--nav-muted)" stroke-width="1.5"/><path d="M5 7V5a3 3 0 0 1 5.5-1.7" fill="none" stroke="var(--nav-muted)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">open</span></span>{{end}}</td>
-<td><time class="link-meta" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="Created: {{.CreatedAt.Format "2006-01-02 15:04 UTC"}}" aria-label="Created: {{.CreatedAt.Format "2006-01-02 15:04 UTC"}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="3" width="12" height="11" rx="1" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M5 2v3M11 2v3M2 6h12" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/><path d="M5 9h.01M8 9h.01M11 9h.01M5 12h.01M8 12h.01" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"/></svg><span class="link-meta-value">{{.CreatedAt.Format "2006-01-02 15:04"}} UTC</span></time></td>
-<td>{{if .ExpiresAt}}<time class="link-meta" datetime="{{.ExpiresAt.Format "2006-01-02T15:04:05Z07:00"}}" title="Expires: {{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}" aria-label="Expires: {{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M8 4v4l2.5 1.5" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="link-meta-value">{{.ExpiresAt.Format "2006-01-02 15:04"}} UTC</span></time>{{else}}<span class="link-meta" title="Expires: never" aria-label="Expires: never"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M4 4l8 8" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">never</span></span>{{end}}</td>
-<td>
+<td class="link-id" data-label="ID"><code>{{.ID}}</code></td>
+<td class="link-url" data-label="URL">{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{else}}<span class="hint">no public URL</span>{{end}}{{if .Description}}<span class="link-description hint">{{.Description}}</span>{{end}}</td>
+<td class="link-access" data-label="Access"><div class="link-stack">
+{{if eq .Scope.Type "admin"}}<span class="link-meta" title="Scope: admin, sees all files" aria-label="Scope: admin, sees all files"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 13V3h12v10H2Zm2-2h8M4 5h8M6 7h4" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="link-meta-value">admin</span></span>{{else}}<span class="link-meta" title="Scope: user, {{.Scope.User}}, sees files/ + user directory" aria-label="Scope: user, {{.Scope.User}}, sees files/ + user directory"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6ZM2.5 14a5.5 5.5 0 0 1 11 0M1.5 5h3M3 3.5v3" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">user: {{.Scope.User}}</span></span>{{end}}
+{{if .HasPassword}}<span class="link-meta" title="Password: protected" aria-label="Password: protected"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1" fill="none" stroke="var(--ok)" stroke-width="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">protected</span></span>{{else}}<span class="link-meta" title="Password: open" aria-label="Password: open"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1" fill="none" stroke="var(--nav-muted)" stroke-width="1.5"/><path d="M5 7V5a3 3 0 0 1 5.5-1.7" fill="none" stroke="var(--nav-muted)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">open</span></span>{{end}}
+</div></td>
+<td class="link-validity" data-label="Validity"><div class="link-stack">
+<time class="link-meta" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="Created: {{.CreatedAt.Format "2006-01-02 15:04 UTC"}}" aria-label="Created: {{.CreatedAt.Format "2006-01-02 15:04 UTC"}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="3" width="12" height="11" rx="1" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M5 2v3M11 2v3M2 6h12" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/><path d="M5 9h.01M8 9h.01M11 9h.01M5 12h.01M8 12h.01" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"/></svg><span class="link-meta-label">Created:</span><span class="link-meta-value">{{.CreatedAt.Format "2006-01-02 15:04"}} UTC</span></time>
+{{if .ExpiresAt}}<time class="link-meta" datetime="{{.ExpiresAt.Format "2006-01-02T15:04:05Z07:00"}}" title="Expires: {{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}" aria-label="Expires: {{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M8 4v4l2.5 1.5" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="link-meta-label">Expires:</span><span class="link-meta-value">{{.ExpiresAt.Format "2006-01-02 15:04"}} UTC</span></time>{{else}}<span class="link-meta" title="Expires: never" aria-label="Expires: never"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M4 4l8 8" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-label">Expires:</span><span class="link-meta-value">never</span></span>{{end}}
+</div></td>
+<td class="link-actions" data-label="Actions">
 <form class="inline-form" method="post" action="/links/delete" data-confirm="Delete link {{.ID}}?" onsubmit="return confirm(this.getAttribute('data-confirm'))">
 <input type="hidden" name="` + csrfField + `" value="{{$.CSRF}}">
 <input type="hidden" name="id" value="{{.ID}}">
