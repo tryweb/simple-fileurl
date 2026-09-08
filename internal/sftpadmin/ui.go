@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"simple-fileurl/internal/links"
 )
 
 // This file owns all admin HTML. Pages are plain server-rendered forms with
@@ -76,12 +79,26 @@ a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,
 .key-note{font-size:.85rem}
 .note-form{margin-top:4px}
 .problems{margin:8px 0}
+.links-table{table-layout:fixed;min-width:1120px}
+.links-table .col-id{width:15%}
+.links-table .col-url{width:18%}
+.links-table .col-scope{width:12%}
+.links-table .col-password{width:10%}
+.links-table .col-created{width:18%}
+.links-table .col-expires{width:18%}
+.links-table .col-actions{width:9%}
+.links-table td:first-child code{white-space:nowrap;word-break:normal}
+.links-table a{overflow-wrap:anywhere;word-break:break-word}
+.link-meta{display:inline-flex;align-items:center;gap:5px;max-width:100%;white-space:nowrap}
+.link-meta svg{flex:none}
+.link-meta-value{overflow:visible;text-overflow:clip}
+.link-description{display:block;margin-top:4px}
 .overlay{position:fixed;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:clamp(24px,var(--overlay-top),96px) 16px 48px;z-index:50}
 .overlay-card{position:static;width:100%;max-width:560px;margin:0}
 </style>
 </head>
 <body>
-{{if .ShowNav}}<header class="topnav"><span class="brand">SFTP admin</span><a href="/"{{if eq .Active "users"}} class="active"{{end}}>Users</a><a href="/settings"{{if eq .Active "settings"}} class="active"{{end}}>Settings</a><form class="inline-form" method="post" action="/logout"><input type="hidden" name="` + csrfField + `" value="{{.CSRF}}"><button type="submit">Sign out</button></form></header>{{end}}
+{{if .ShowNav}}<header class="topnav"><span class="brand">SFTP admin</span><a href="/"{{if eq .Active "users"}} class="active"{{end}}>Users</a><a href="/links"{{if eq .Active "links"}} class="active"{{end}}>Links</a><a href="/settings"{{if eq .Active "settings"}} class="active"{{end}}>Settings</a><form class="inline-form" method="post" action="/logout"><input type="hidden" name="` + csrfField + `" value="{{.CSRF}}"><button type="submit">Sign out</button></form></header>{{end}}
 <main>{{template "content" .}}</main>
 </body>
 </html>`))
@@ -340,6 +357,112 @@ func renderSettings(w http.ResponseWriter, v settingsView) {
 	v.Active = "settings"
 	render(w, func(out io.Writer) error {
 		return settingsTemplate.Execute(out, v)
+	})
+}
+
+var linksTemplate = template.Must(template.Must(baseTemplate.Clone()).Parse(`{{define "content"}}
+<h1>Share Links</h1>
+{{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+{{if .Error}}<p class="alert" role="alert">{{.Error}}</p>{{end}}
+<section class="card" id="existing-links">
+<h2>Existing links</h2>
+{{if .Links}}
+<div class="table-wrap">
+<table class="links-table">
+<colgroup><col class="col-id"><col class="col-url"><col class="col-scope"><col class="col-password"><col class="col-created"><col class="col-expires"><col class="col-actions"></colgroup>
+<thead><tr><th scope="col">ID</th><th scope="col">URL</th><th scope="col">Scope</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Actions</th></tr></thead>
+<tbody>
+{{range .Links}}<tr>
+<td><code>{{.ID}}</code></td>
+<td>{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{else}}<span class="hint">no public URL</span>{{end}}{{if .Description}}<span class="link-description hint">{{.Description}}</span>{{end}}</td>
+<td>{{if eq .Scope.Type "admin"}}<span class="link-meta" title="Scope: admin, sees all files" aria-label="Scope: admin, sees all files"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 13V3h12v10H2Zm2-2h8M4 5h8M6 7h4" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="link-meta-value">admin</span></span>{{else}}<span class="link-meta" title="Scope: user, {{.Scope.User}}, sees files/ + user directory" aria-label="Scope: user, {{.Scope.User}}, sees files/ + user directory"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6ZM2.5 14a5.5 5.5 0 0 1 11 0M1.5 5h3M3 3.5v3" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">user: {{.Scope.User}}</span></span>{{end}}</td>
+<td>{{if .HasPassword}}<span class="link-meta" title="Password: protected" aria-label="Password: protected"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1" fill="none" stroke="var(--ok)" stroke-width="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="var(--ok)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">protected</span></span>{{else}}<span class="link-meta" title="Password: open" aria-label="Password: open"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="3" y="7" width="10" height="7" rx="1" fill="none" stroke="var(--nav-muted)" stroke-width="1.5"/><path d="M5 7V5a3 3 0 0 1 5.5-1.7" fill="none" stroke="var(--nav-muted)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">open</span></span>{{end}}</td>
+<td><time class="link-meta" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="Created: {{.CreatedAt.Format "2006-01-02 15:04 UTC"}}" aria-label="Created: {{.CreatedAt.Format "2006-01-02 15:04 UTC"}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="3" width="12" height="11" rx="1" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M5 2v3M11 2v3M2 6h12" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/><path d="M5 9h.01M8 9h.01M11 9h.01M5 12h.01M8 12h.01" stroke="var(--muted)" stroke-width="2" stroke-linecap="round"/></svg><span class="link-meta-value">{{.CreatedAt.Format "2006-01-02 15:04"}} UTC</span></time></td>
+<td>{{if .ExpiresAt}}<time class="link-meta" datetime="{{.ExpiresAt.Format "2006-01-02T15:04:05Z07:00"}}" title="Expires: {{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}" aria-label="Expires: {{.ExpiresAt.Format "2006-01-02 15:04 UTC"}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M8 4v4l2.5 1.5" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="link-meta-value">{{.ExpiresAt.Format "2006-01-02 15:04"}} UTC</span></time>{{else}}<span class="link-meta" title="Expires: never" aria-label="Expires: never"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--muted)" stroke-width="1.5"/><path d="M4 4l8 8" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/></svg><span class="link-meta-value">never</span></span>{{end}}</td>
+<td>
+<form class="inline-form" method="post" action="/links/delete" data-confirm="Delete link {{.ID}}?" onsubmit="return confirm(this.getAttribute('data-confirm'))">
+<input type="hidden" name="` + csrfField + `" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button class="danger" type="submit">Delete</button>
+</form>
+</td>
+</tr>{{end}}
+</tbody>
+</table>
+</div>
+{{else}}<p>No links yet.</p>{{end}}
+</section>
+<section class="card" id="create-link">
+<h2>Create link</h2>
+<p><span class="hint">Special paths let users access files via hash-based URLs. Admin sees all files, users see only files/ and their own directory.</span></p>
+<form method="post" action="/links/create">
+<input type="hidden" name="` + csrfField + `" value="{{.CSRF}}">
+<label for="scope-type">Scope type</label>
+<select id="scope-type" name="scope_type" required>
+<option value="admin">Admin (see all files)</option>
+<option value="user">User (see files/ + user directory)</option>
+</select>
+<label for="scope-user">Username <span class="hint">required when scope is user</span></label>
+<input type="text" id="scope-user" name="scope_user" pattern="[a-z_][a-z0-9_\-]{0,31}" maxlength="32">
+<label for="password">Password <span class="hint">optional, leave empty for no password</span></label>
+<input type="password" id="password" name="password" autocomplete="new-password">
+<label for="description">Description <span class="hint">optional</span></label>
+<input type="text" id="description" name="description" maxlength="200">
+<label for="expires">Expires <span class="hint">optional, leave empty for no expiry</span></label>
+<input type="datetime-local" id="expires" name="expires">
+<input type="hidden" id="expires-offset" name="expires_offset" value="0">
+<div class="form-actions"><button type="submit">Create link</button></div>
+</form>
+<script>document.getElementById("expires-offset").value=String(new Date().getTimezoneOffset());</script>
+</section>
+{{end}}`))
+
+type linkRow struct {
+	ID          string
+	URL         string
+	Scope       links.Scope
+	HasPassword bool
+	CreatedAt   time.Time
+	ExpiresAt   *time.Time
+	Description string
+}
+
+type linksView struct {
+	pageData
+	Links  []linkRow
+	Notice string
+	Error  string
+}
+
+func linksDashboard(allLinks []links.Link, csrf, publicURL string) linksView {
+	v := linksView{Links: []linkRow{}}
+	v.Title = "Share Links"
+	v.ShowNav = true
+	v.Active = "links"
+	v.CSRF = csrf
+	for _, l := range allLinks {
+		row := linkRow{
+			ID:          l.ID,
+			Scope:       l.Scope,
+			HasPassword: l.HasPassword(),
+			CreatedAt:   l.CreatedAt,
+			ExpiresAt:   l.ExpiresAt,
+			Description: l.Description,
+		}
+		if publicURL != "" {
+			row.URL = strings.TrimRight(publicURL, "/") + "/l/" + l.ID
+		}
+		v.Links = append(v.Links, row)
+	}
+	return v
+}
+
+func renderLinks(w http.ResponseWriter, v linksView) {
+	v.Title = "Share Links"
+	v.ShowNav = true
+	v.Active = "links"
+	render(w, func(out io.Writer) error {
+		return linksTemplate.Execute(out, v)
 	})
 }
 

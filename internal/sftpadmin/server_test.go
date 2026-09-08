@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"simple-fileurl/internal/config"
+	"simple-fileurl/internal/links"
 )
 
 const testPassword = "correct-horse-admin"
@@ -383,5 +384,152 @@ func TestConfigRejectsRelativeSharedPath(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("relative SHARED_CONFIG_PATH accepted, want error")
+	}
+}
+
+func TestLinksPageShowsShareURL(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "config.json")
+	sc := config.SharedConfig{
+		HashAlgorithm:     "md5",
+		HashTarget:        "file",
+		PublicURL:         "https://example.test",
+		AdminToken:        "tok",
+		SftpAdminPassword: testPassword,
+	}
+	if err := sc.Save(shared); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{
+		Password:   testPassword,
+		Addr:       ":0",
+		UsersFile:  filepath.Join(dir, "users.json"),
+		SharedPath: shared,
+		LinksDir:   filepath.Join(dir, "links"),
+	}, NewStore(filepath.Join(dir, "users.json")))
+	if err := srv.links.Create(links.Link{
+		ID:        "abc123",
+		Scope:     links.Scope{Type: links.ScopeAdmin},
+		CreatedAt: time.Now().UTC().Truncate(time.Second),
+		CreatedBy: "admin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := loginAs(t, srv)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/links", nil)
+	req.AddCookie(sess)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /links = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "https://example.test/l/abc123") {
+		t.Errorf("links page missing share URL, got:\n%s", body)
+	}
+	if strings.Contains(body, "no public URL") {
+		t.Error("links page shows no-public-URL hint despite configured PUBLIC_URL")
+	}
+}
+
+func TestLinksPageWithoutPublicURLShowsHint(t *testing.T) {
+	dir := t.TempDir()
+	srv := NewServer(Config{
+		Password:  testPassword,
+		Addr:      ":0",
+		UsersFile: filepath.Join(dir, "users.json"),
+		LinksDir:  filepath.Join(dir, "links"),
+	}, NewStore(filepath.Join(dir, "users.json")))
+	if err := srv.links.Create(links.Link{
+		ID:        "abc123",
+		Scope:     links.Scope{Type: links.ScopeAdmin},
+		CreatedAt: time.Now().UTC().Truncate(time.Second),
+		CreatedBy: "admin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := loginAs(t, srv)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/links", nil)
+	req.AddCookie(sess)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /links = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "no public URL") {
+		t.Error("links page must show the no-public-URL hint when PUBLIC_URL is unset")
+	}
+}
+
+func TestLinkCreateUsesBrowserTimezoneOffset(t *testing.T) {
+	dir := t.TempDir()
+	srv := NewServer(Config{
+		Password:  testPassword,
+		LinksDir:  filepath.Join(dir, "links"),
+		UsersFile: filepath.Join(dir, "users.json"),
+	}, NewStore(filepath.Join(dir, "users.json")))
+	sess, csrf := loginAs(t, srv)
+	rec := authedPost(srv, sess, "/links/create", url.Values{
+		csrfField:        {csrf},
+		"scope_type":     {"admin"},
+		"expires":        {"2030-01-02T09:00"},
+		"expires_offset": {"-480"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("create link = %d, want 303", rec.Code)
+	}
+	id := strings.TrimPrefix(rec.Header().Get("Location"), "/links?created=")
+	link, ok := srv.links.Get(id)
+	if !ok {
+		t.Fatal("created link missing")
+	}
+	if link.ExpiresAt == nil {
+		t.Fatal("created link has no expiry")
+	}
+	want := time.Date(2030, time.January, 2, 1, 0, 0, 0, time.UTC)
+	if !link.ExpiresAt.Equal(want) {
+		t.Errorf("expiry = %s, want %s", link.ExpiresAt.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+func TestLinksPageCompactMetadataContract(t *testing.T) {
+	dir := t.TempDir()
+	srv := NewServer(Config{
+		Password:  testPassword,
+		LinksDir:  filepath.Join(dir, "links"),
+		UsersFile: filepath.Join(dir, "users.json"),
+	}, NewStore(filepath.Join(dir, "users.json")))
+	if err := srv.links.Create(links.Link{
+		ID:           "compact",
+		Scope:        links.Scope{Type: links.ScopeUser, User: "alice"},
+		PasswordHash: "hash",
+		CreatedAt:    time.Date(2030, time.January, 2, 1, 0, 0, 0, time.UTC),
+		ExpiresAt:    func() *time.Time { v := time.Date(2030, time.January, 2, 2, 0, 0, 0, time.UTC); return &v }(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := loginAs(t, srv)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/links", nil)
+	req.AddCookie(sess)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /links = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="links-table"`,
+		`table-layout:fixed`,
+		`class="link-meta"`,
+		`aria-label="Scope: user, alice, sees`,
+		`aria-label="Password: protected"`,
+		`aria-label="Created:`,
+		`aria-label="Expires:`,
+		`word-break:break-all`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("links page must render %q", want)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package sftpadmin
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"simple-fileurl/internal/config"
+	"simple-fileurl/internal/links"
 )
 
 // pendingKeyTTL bounds how long a generated private key waits for its
@@ -37,6 +39,8 @@ type Server struct {
 	password string
 	// sharedPath is the shared config.json location.
 	sharedPath string
+	// links is the share link store for managing special paths.
+	links *links.Store
 	// gen creates keypairs; replaceable in tests for determinism.
 	gen     func(comment string) (KeyPair, error)
 	mu      sync.Mutex
@@ -46,11 +50,16 @@ type Server struct {
 
 // NewServer wires routes. cfg.Password must already be validated non-empty.
 func NewServer(cfg Config, st *Store) *Server {
+	ls := links.NewStore(cfg.LinksDir)
+	if err := ls.Load(); err != nil {
+		log.Printf("warning: could not load links store: %v", err)
+	}
 	s := &Server{
 		store:      st,
 		auth:       newAuthState(cfg.Password),
 		password:   cfg.Password,
 		sharedPath: cfg.SharedPath,
+		links:      ls,
 		gen:        GenerateEd25519KeyPair,
 		pending:    map[string]pendingKey{},
 		mux:        http.NewServeMux(),
@@ -71,7 +80,20 @@ func NewServer(cfg Config, st *Store) *Server {
 	s.mux.HandleFunc("GET /keys/download", s.handleDownload)
 	s.mux.HandleFunc("GET /settings", s.handleSettings)
 	s.mux.HandleFunc("POST /settings", s.handleSettingsSave)
+	s.mux.HandleFunc("GET /links", s.handleLinks)
+	s.mux.HandleFunc("POST /links/create", s.handleLinkCreate)
+	s.mux.HandleFunc("POST /links/delete", s.handleLinkDelete)
 	return s
+}
+
+// reloadLinks refreshes the shared links store from disk before reading or
+// mutating links so changes made by the file-sharing API are visible and
+// never clobbered by this container's stale in-memory snapshot. A read
+// error keeps the current snapshot; the writer's atomic rename still wins.
+func (s *Server) reloadLinks() {
+	if err := s.links.Load(); err != nil {
+		return
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -759,6 +781,16 @@ func (s *Server) sharedConfigPath() string {
 	return config.DefaultSharedConfigPath
 }
 
+// publicURL returns the external base URL for share links, reading the
+// shared config so link URLs reflect live settings. Empty when unavailable.
+func (s *Server) publicURL() string {
+	sc, err := config.LoadShared(s.sharedConfigPath())
+	if err != nil {
+		return ""
+	}
+	return sc.PublicURL
+}
+
 // settingsGroups loads current values merged with registry metadata,
 // grouped by service in registry order.
 func (s *Server) settingsGroups() ([]settingsGroup, error) {
@@ -883,4 +915,157 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+pk.username+`_ed25519"`)
 	_, _ = w.Write([]byte(pk.private))
+}
+
+func (s *Server) handleLinks(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	allLinks := s.links.List()
+	v := linksDashboard(allLinks, sess.csrf, s.publicURL())
+	v.Notice = linksNotice(r)
+	renderLinks(w, v)
+}
+
+func parseAdminExpiry(value, offsetText string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	offsetMinutes := 0
+	if offsetText != "" {
+		parsed, err := strconv.Atoi(offsetText)
+		if err != nil || parsed < -14*60 || parsed > 14*60 {
+			return nil, errors.New("invalid browser timezone offset")
+		}
+		offsetMinutes = parsed
+	}
+	location := time.FixedZone("browser", -offsetMinutes*60)
+	parsed, err := time.ParseInLocation("2006-01-02T15:04", value, location)
+	if err != nil {
+		return nil, err
+	}
+	utc := parsed.UTC()
+	return &utc, nil
+}
+
+func linksNotice(r *http.Request) string {
+	if v := r.URL.Query().Get("created"); v != "" {
+		return "Link created: " + v
+	}
+	return ""
+}
+
+func (s *Server) handleLinkCreate(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	scopeType := links.ScopeType(strings.TrimSpace(r.FormValue("scope_type")))
+	scopeUser := strings.TrimSpace(r.FormValue("scope_user"))
+	password := r.FormValue("password")
+	description := strings.TrimSpace(r.FormValue("description"))
+	expiresStr := r.FormValue("expires")
+
+	if scopeType != links.ScopeAdmin && scopeType != links.ScopeUser {
+		s.linksWithError(w, sess.csrf, "Invalid scope type", http.StatusBadRequest)
+		return
+	}
+	if scopeType == links.ScopeUser && scopeUser == "" {
+		s.linksWithError(w, sess.csrf, "Username required for user scope", http.StatusBadRequest)
+		return
+	}
+	if scopeType == links.ScopeUser {
+		if err := ValidateUsername(scopeUser); err != nil {
+			s.linksWithError(w, sess.csrf, "Invalid username: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	var hash string
+	if password != "" {
+		h, err := links.HashPassword(password)
+		if err != nil {
+			s.linksWithError(w, sess.csrf, "Failed to hash password", http.StatusInternalServerError)
+			return
+		}
+		hash = h
+	}
+
+	var expiresAt *time.Time
+	if expiresStr != "" {
+		t, err := parseAdminExpiry(expiresStr, r.FormValue("expires_offset"))
+		if err != nil {
+			s.linksWithError(w, sess.csrf, "Invalid expiry date", http.StatusBadRequest)
+			return
+		}
+		expiresAt = t
+	}
+
+	id, err := links.NewID()
+	if err != nil {
+		s.linksWithError(w, sess.csrf, "Failed to generate link ID", http.StatusInternalServerError)
+		return
+	}
+
+	l := links.Link{
+		ID:           id,
+		PasswordHash: hash,
+		Scope:        links.Scope{Type: scopeType, User: scopeUser},
+		CreatedAt:    time.Now().UTC().Truncate(time.Second),
+		ExpiresAt:    expiresAt,
+		CreatedBy:    "admin",
+		Description:  description,
+	}
+
+	if err := s.links.Create(l); err != nil {
+		s.linksWithError(w, sess.csrf, "Failed to create link: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/links?created="+id, http.StatusSeeOther)
+}
+
+func (s *Server) handleLinkDelete(w http.ResponseWriter, r *http.Request) {
+	s.reloadLinks()
+	sess, ok := s.requireAuth(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		s.linksWithError(w, sess.csrf, "Link ID required", http.StatusBadRequest)
+		return
+	}
+	if err := s.links.Delete(id); err != nil {
+		s.linksWithError(w, sess.csrf, "Failed to delete link: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/links", http.StatusSeeOther)
+}
+
+func (s *Server) linksWithError(w http.ResponseWriter, csrf, msg string, status int) {
+	allLinks := s.links.List()
+	v := linksDashboard(allLinks, csrf, s.publicURL())
+	v.Error = msg
+	renderLinksStatus(w, v, status)
+}
+
+func renderLinksStatus(w http.ResponseWriter, v linksView, status int) {
+	v.Title = "Share Links"
+	v.ShowNav = true
+	v.Active = "links"
+	renderStatus(w, status, func(out io.Writer) error {
+		return linksTemplate.Execute(out, v)
+	})
 }
