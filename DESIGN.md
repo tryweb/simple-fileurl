@@ -65,6 +65,9 @@ above rather than repeating raw color values.
 - Key type (e.g. `ssh-ed25519`) renders as small muted text (`.key-type`,
   `.85rem`, `var(--muted)`), never as a heading.
 - No custom fonts, no icon fonts, no emojis. Text labels only.
+- Operational metadata may pair inline SVG icons with visible values and
+  `title`/`aria-label` tips; icons are supplementary and never the only
+  accessible label.
 
 ## 4. Spacing / layout
 
@@ -98,10 +101,21 @@ above rather than repeating raw color values.
   (`.col-username/.col-status/.col-keys/.col-manage` + `.user-summary`).
   Percentage widths (not pixels) scale down intact, which is what keeps the
   375px path safe.
-- Card order on the Users page is Existing users (`#existing-users`) first,
+ - Card order on the Users page is Existing users (`#existing-users`) first,
   then Create user (`#create-user`), then Key repair (`#key-repair`); stable
   `id` hooks exist for all three cards and `class="users-table"` for the
-  table.
+   table.
+- The Share Links page uses `#existing-links` before `#create-link`. Its
+  `.links-table` uses fixed percentage columns and compact `.link-meta`
+  metadata for Scope, Password, Created, and Expires; long URLs wrap only in
+  the URL column, while metadata values stay together on one line where the
+  viewport permits.
+- The Create link `datetime-local` field represents the admin browser's local
+  time. A hidden browser offset is submitted with the form, the server stores
+  the resulting instant in UTC, and Created/Expires display an explicit `UTC`
+  suffix plus accessible icon tips. Public `/l/<id>`, password, and files
+  routes enforce expiry at request time; direct hash download URLs remain
+  permanent bearer URLs by design.
 - Responsive: single column below ~600px. Tables scroll horizontally if needed
   (wrap the users table in `.table-wrap{overflow-x:auto}` — the ONLY element
   allowed to scroll); at 375px every maintenance control inside
