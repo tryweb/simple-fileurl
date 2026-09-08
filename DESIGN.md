@@ -108,15 +108,21 @@ above rather than repeating raw color values.
   table.
 - The Share Links page uses `#existing-links` before `#create-link` and
   satisfies these layout constraints:
+  - The logical columns are `ID`, `URL`, `Access`, `Validity`, and `Actions`.
   - The ID column displays the full link ID on a single line at desktop width.
-  - Scope, Password, Created, and Expires use compact icon+value metadata with
-    visible text plus `title`/`aria-label` tips; values stay on one line where
-    the viewport permits and never truncate with ellipsis.
+  - `Access` stacks Scope above Password; `Validity` stacks Created above
+    Expires. Each item uses compact icon+value metadata with visible text plus
+    `title`/`aria-label` tips; values never truncate with ellipsis.
   - Long URLs wrap only inside the URL column.
   - Optional descriptions appear below the URL, not inside the Actions column.
-  - The table has a readable minimum width; on narrow viewports it scrolls
-    horizontally inside `.table-wrap`, while the page itself never scrolls
-    sideways and the Create link form remains a single usable column.
+  - The table uses fluid percentage columns and does not impose a pixel
+    minimum width; `.table-wrap` is the only horizontal-overflow boundary and
+    is a defensive fallback rather than the expected medium-width layout.
+  - Below 1024px each link reflows into a stacked card with labelled sections
+    for ID, URL, Access, Validity, and Actions. URLs, descriptions, and access
+    metadata may wrap when constrained, while IDs remain single-line where
+    readable. The mobile page never requires horizontal scrolling, and the
+    Create link form remains a single usable column.
 - The Create link `datetime-local` field represents the admin browser's local
   time. A hidden browser offset is submitted with the form, the server stores
   the resulting instant in UTC, and Created/Expires display an explicit `UTC`
