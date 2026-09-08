@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -171,6 +172,14 @@ func (s *Store) saveLocked() error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
+	// The temp file stays owner-only while password hashes are written; the
+	// published file is 0640 with the store directory's group so the
+	// non-root file-sharing reader keeps read access even when the root
+	// sftp-admin container wrote it (mirrors config.SharedConfig.Save).
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if _, err := tmp.Write(raw); err != nil {
 		_ = tmp.Close()
 		return err
@@ -182,7 +191,18 @@ func (s *Store) saveLocked() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, s.path)
+	// Best effort: inherit the store directory's group so a group reader
+	// survives even on volumes created before the ownership model existed.
+	// Failures are ignored; the rename below still publishes the file.
+	if st, err := os.Stat(filepath.Dir(s.path)); err == nil {
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+			_ = os.Chown(tmpName, -1, int(sys.Gid))
+		}
+	}
+	if err := os.Rename(tmpName, s.path); err != nil {
+		return err
+	}
+	return os.Chmod(s.path, 0o640)
 }
 
 // Create stores a new link. Duplicate IDs are rejected.
