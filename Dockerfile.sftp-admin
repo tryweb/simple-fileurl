@@ -18,7 +18,10 @@ RUN apk add --no-cache ca-certificates wget openssh-keygen \
     && chmod 0700 /var/lib/sftp-users \
     && mkdir -p /etc/app \
     && chown root:webreaders /etc/app \
-    && chmod 2770 /etc/app
+    && chmod 2770 /etc/app \
+    && addgroup -S app && adduser -S -G app app \
+    && mkdir -p /var/lib/file-links \
+    && chown app:app /var/lib/file-links
 COPY --from=builder /out/sftp-admin /usr/local/bin/sftp-admin
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/sftp-admin"]

@@ -25,6 +25,9 @@ const DefaultUsersFile = "/var/lib/sftp-users/users.json"
 // DefaultAddr is the container listen address of the admin UI.
 const DefaultAddr = ":8080"
 
+// DefaultLinksDir is the directory for the links store.
+const DefaultLinksDir = "/var/lib/file-links"
+
 // Config holds the runtime configuration of the admin UI.
 type Config struct {
 	// Password is the single admin password. Required.
@@ -40,6 +43,9 @@ type Config struct {
 	// SharedPath is the shared config.json location read for live
 	// settings. Defaults to config.DefaultSharedConfigPath.
 	SharedPath string
+	// LinksDir is the directory containing links.json for share link
+	// management. Defaults to DefaultLinksDir.
+	LinksDir string
 }
 
 // LoadConfig reads configuration from the environment. A missing
@@ -55,12 +61,16 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		SeedUser:   getenv("SFTP_SEED_USER"),
 		SeedPubKey: getenv("SFTP_SEED_PUBKEY"),
 		SharedPath: getenv("SHARED_CONFIG_PATH"),
+		LinksDir:   getenv("LINKS_DIR"),
 	}
 	if cfg.SharedPath == "" {
 		cfg.SharedPath = config.DefaultSharedConfigPath
 	}
 	if !path.IsAbs(cfg.SharedPath) {
 		return Config{}, errors.New("sftpadmin: SHARED_CONFIG_PATH must be an absolute path")
+	}
+	if cfg.LinksDir == "" {
+		cfg.LinksDir = DefaultLinksDir
 	}
 	// The password may come from the environment or the shared config
 	// file; with neither source the container fails fast.

@@ -95,6 +95,9 @@ services:
     volumes:
       - sftp-users:/var/lib/sftp-users:rw
       - app-config:/etc/app:rw
+      # Named volume holding links.json for the share-link system, shared
+      # with file-sharing so the admin can manage the same links.
+      - file-links:/var/lib/file-links:rw
     environment:
       PORT: "8080"
       SFTP_ADMIN_PASSWORD: "${SFTP_ADMIN_PASSWORD:-dev-admin-password}"
@@ -105,6 +108,8 @@ services:
       PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${PORT:-18080}}"
       WEB_GID: "${WEB_GID:-2001}"
       ADMIN_TOKEN: "${ADMIN_TOKEN:-dev-admin-token}"
+      # Directory holding links.json, on the file-links named volume.
+      LINKS_DIR: /var/lib/file-links
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 30s
